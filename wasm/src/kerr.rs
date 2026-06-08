@@ -1,7 +1,13 @@
-//! Kerr metric quantities in Boyer-Lindquist coordinates.
+//! Kerr metric quantities in Boyer-Lindquist / ingoing Kerr coordinates.
 //!
 //! Uses geometrized units: G = c = 1.
-//! Coordinates: (t, r, θ, φ) — signature (-, +, +, +).
+//! Primary coordinates: Boyer-Lindquist (t, r, θ, φ), signature (-, +, +, +).
+//!
+//! The azimuthal component of the geodesic RHS uses the **ingoing Kerr**
+//! coordinate φ̃ = φ + ∫a/Δ dr, which is regular at the outer horizon.
+//! Away from the horizon the two coincide to high accuracy; near and inside
+//! the horizon only φ̃ is well-defined. The r and θ equations are the same
+//! in both coordinate systems (r and θ are shared).
 //!
 //! Kerr parameters:
 //!   M — black hole mass
@@ -145,10 +151,15 @@ impl ConservedQuantities {
 
 /// The right-hand side of the geodesic equations in first-order form.
 ///
-/// State vector: [r, θ, φ, ṙ, θ̇]  (t and φ are recovered from conserved quantities)
-/// where dots denote derivatives with respect to affine parameter λ (= proper time τ for massive).
+/// State vector: [r, θ, φ̃, ṙ, θ̇]  where φ̃ is the ingoing Kerr azimuthal
+/// coordinate (regular at the horizon). ṫ is derived from conserved quantities.
+/// Dots denote derivatives with respect to affine parameter λ (= proper time τ for massive).
 ///
-/// Returns [ṙ, θ̇, φ̇, r̈, θ̈] — the derivatives of the state vector.
+/// Returns [ṙ, θ̇, φ̃̇, r̈, θ̈] — the derivatives of the state vector.
+///
+/// # Regularity
+/// - r̈, θ̈: regular everywhere except the ring singularity (r=0, θ=π/2)
+/// - φ̃̇:   regular at the outer horizon; uses a Taylor limit when Δ ≈ 0
 pub fn geodesic_rhs(
     params: &KerrParams,
     r: f64,
@@ -173,12 +184,41 @@ pub fn geodesic_rhs(
     let sin2 = sin_th * sin_th;
     let cos2 = cos_th * cos_th;
 
-    // --- φ̇ (from Kerr geodesic equations) ---
-    // φ̇ = [-(aE - Lz/sin²θ) + a(Δ⁻¹)((r²+a²)E - aLz)] / Σ
+    // --- φ̃̇ in ingoing Kerr coordinates (regular at the outer horizon) ---
+    //
+    // BL formula φ̇ = [-(aE - Lz/sin²θ) + aP/Δ] / Σ  diverges as Δ → 0.
+    //
+    // IK formula: dφ̃/dλ = dφ/dλ + a·ṙ/Δ
+    //   = [-(aE - Lz/sin²θ) + a(P + Σṙ)/Δ] / Σ
+    //
+    // Near the horizon P + Σṙ → 0 for infalling particles (since Σ²ṙ² = R = P²
+    // when Δ = 0), so the ratio (P + Σṙ)/Δ is 0/0 — finite by L'Hôpital.
+    //
+    // Taylor limit as Δ → 0:
+    //   (P - √R)/Δ = (P - √(P² - Δξ))/Δ ≈ ξ/(2P)
+    // where P = (r²+a²)E - aLz, ξ = (Lz-aE)² + Q + μ²r²
+    //
+    // We blend to this limit when |Δ| falls below DELTA_THRESHOLD.
     let phi_dot = {
-        let term1 = -(a * e - lz / sin2.max(1e-14));
-        let term2 = a * ((r * r + a * a) * e - a * lz) / delta;
-        (term1 + term2) / sigma
+        let p_val = (r * r + a * a) * e - a * lz;
+        let xi = (lz - a * e).powi(2) + q + mu_sq * r * r;
+        let base = -(a * e - lz / sin2.max(1e-14)) / sigma;
+
+        // Threshold in units of M² — covers a region ~M/100 wide around the horizon.
+        // Must be large enough to avoid numerical blow-up but small enough not
+        // to distort the geodesic far from the horizon.
+        const DELTA_THRESHOLD: f64 = 1e-3;
+
+        let regularized = if delta.abs() > DELTA_THRESHOLD {
+            // Away from horizon: full IK formula, exact.
+            a * (p_val + sigma * r_dot) / (sigma * delta)
+        } else {
+            // Near/at horizon: Taylor limit ξ/(2P).
+            // p_val > 0 for all physical infalling orbits we consider.
+            a * xi / (2.0 * p_val.abs().max(1e-12) * sigma)
+        };
+
+        base + regularized
     };
 
     // --- Effective potentials for r and θ motion (used only for derivatives below) ---
