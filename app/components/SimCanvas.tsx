@@ -18,6 +18,7 @@ import {
   LENS_FRAG,
   createLensingUniforms,
   updateLensingUniforms,
+  type LensingUniforms,
 } from '@/shaders/lensing';
 
 const STAR_COUNT    = 8_000;
@@ -92,32 +93,42 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
     // RenderPass → writes stars + BH sphere to tDiffuse.
     // LensingPass → traces null geodesics per pixel, warps the background,
     //               and composites primary + secondary disk images.
-    const initialCamPos = camera.position;
-    const initialR      = initialCamPos.length() / WORLD_SCALE; // in M
+    //
+    // IMPORTANT: ShaderPass clones the uniforms object internally via
+    // THREE.UniformsUtils.clone().  All per-frame updates must target
+    // lensingPass.uniforms (the clone), not the object passed to the constructor.
+    const initialR = camera.position.length() / WORLD_SCALE; // 8 M
+    // Camera starts at (0, 0, 8·WS) = BL φ = π/2 (z-axis), so cam_phi = π/2.
+    const initialFwd: [number, number, number] = [0, 0, -1];  // looking at origin
+    const initialRight: [number, number, number] = [1, 0, 0];
+    const initialUp: [number, number, number]   = [0, 1, 0];
 
-    const lensingUniforms = createLensingUniforms(
-      {
-        mass:        1.0,
-        cam_r:       initialR,
-        cam_theta:   Math.PI / 2,
-        cam_phi:     0.0,
-        cam_right:   [1, 0, 0],
-        cam_up_vec:  [0, 1, 0],
-        cam_forward: [0, 0, -1],
-        resolution:  [mount.clientWidth, mount.clientHeight],
-      },
-      DISK_INNER_M,
-      DISK_OUTER_M,
-      2.0, // Schwarzschild horizon = 2M
-    );
+    const lensingPass = new ShaderPass({
+      uniforms: createLensingUniforms(
+        {
+          mass:        1.0,
+          cam_r:       initialR,
+          cam_theta:   Math.PI / 2,
+          cam_phi:     Math.PI / 2,  // camera is on the +Z axis → φ = π/2
+          cam_right:   initialRight,
+          cam_up_vec:  initialUp,
+          cam_forward: initialFwd,
+          resolution:  [mount.clientWidth, mount.clientHeight],
+        },
+        DISK_INNER_M,
+        DISK_OUTER_M,
+        2.0, // Schwarzschild horizon = 2M for mass=1
+      ),
+      vertexShader:   LENS_VERT,
+      fragmentShader: LENS_FRAG,
+    });
+
+    // lensingPass.uniforms is the clone Three.js made — this is what the GPU reads.
+    const lensUniforms = lensingPass.uniforms as LensingUniforms;
 
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
-    composer.addPass(new ShaderPass({
-      uniforms:       lensingUniforms,
-      vertexShader:   LENS_VERT,
-      fragmentShader: LENS_FRAG,
-    }));
+    composer.addPass(lensingPass);
 
     // ── Resize handler ────────────────────────────────────────────────────────
     function onResize() {
@@ -155,8 +166,8 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
             .crossVectors(camFwd, camera.up)
             .normalize();
 
-          // Update lensing pass uniforms
-          updateLensingUniforms(lensingUniforms, {
+          // Update the cloned uniforms that the ShaderPass actually reads
+          updateLensingUniforms(lensUniforms, {
             mass:        sim.stateRef.current.mass,
             cam_r:       frame.r,
             cam_theta:   frame.theta,
