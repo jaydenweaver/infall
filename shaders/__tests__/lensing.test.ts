@@ -143,9 +143,13 @@ describe('lensing shader', () => {
     expect(LENS_FRAG).toContain('k4');
   });
 
-  it('fragment shader implements geodesic derivative', () => {
+  it('fragment shader passes E2 through geodesic integration', () => {
+    expect(LENS_FRAG).toContain('E2');
     expect(LENS_FRAG).toContain('geodesicDeriv');
-    expect(LENS_FRAG).toContain('u_r_horizon');
+  });
+
+  it('fragment shader guards against spurious disk crossings', () => {
+    expect(LENS_FRAG).toContain('abs(prevCosT) > 0.05');
   });
 
   it('fragment shader contains N_STEPS loop', () => {

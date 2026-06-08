@@ -103,22 +103,23 @@ export const LENS_FRAG = /* glsl */`
   // ── Schwarzschild null geodesic — Hamilton's equations ───────────────────
   //
   // State s = (r, θ, p_r, p_θ),  conserved angular momentum Lz.
-  // Setting E = 1 (overall scale irrelevant for null geodesics).
+  //
+  // The local tetrad sets p^(t̂) = 1 at the observer, giving conserved
+  // BL energy E_BL = √f₀  (where f₀ = f(r_observer)).  We carry E₀² = f₀
+  // as a constant so the Hamiltonian H = 0 is satisfied exactly.
   //
   // Hamiltonian:
-  //   H = ½[ −1/f + f·p_r² + p_θ²/r² + Lz²/(r²sin²θ) ] = 0
+  //   H = ½[ −E₀²/f + f·p_r² + p_θ²/r² + Lz²/(r²sin²θ) ] = 0
   //
-  // where  f = 1 − 2M/r.
-  //
-  // Equations of motion:
+  // Equations of motion  (E₀² multiplies only the first dp_r term):
   //   dr/dλ   = f · p_r
   //   dθ/dλ   = p_θ / r²
-  //   dp_r/dλ = −M/(r²f²) − M·p_r²/r² + p_θ²/r³ + Lz²/(r³sin²θ)
+  //   dp_r/dλ = −E₀²·M/(r²f²) − M·p_r²/r² + p_θ²/r³ + Lz²/(r³sin²θ)
   //   dp_θ/dλ = Lz²·cosθ / (r²sin³θ)
   //
   // dφ/dλ = Lz / (r²sin²θ)  is integrated separately (φ is cyclic).
   //
-  vec4 geodesicDeriv(vec4 s, float Lz) {
+  vec4 geodesicDeriv(vec4 s, float Lz, float E2) {
     float r    = max(s.x, 0.1);
     float th   = s.y;
     float pr   = s.z;
@@ -134,7 +135,7 @@ export const LENS_FRAG = /* glsl */`
     return vec4(
       f * pr,                                            // dr/dλ
       pth / r2,                                          // dθ/dλ
-      -u_mass / (r2 * f * f)                             // dp_r/dλ
+      -E2 * u_mass / (r2 * f * f)                        // dp_r/dλ  ← E₀² factor
         - u_mass * pr * pr / r2
         + pth * pth / r3
         + Lz * Lz / (r3 * sin2),
@@ -143,11 +144,11 @@ export const LENS_FRAG = /* glsl */`
   }
 
   // ── Classic RK4 integrator step ──────────────────────────────────────────
-  vec4 rk4Step(vec4 s, float Lz, float dl) {
-    vec4 k1 = geodesicDeriv(s,               Lz);
-    vec4 k2 = geodesicDeriv(s + 0.5*dl*k1,  Lz);
-    vec4 k3 = geodesicDeriv(s + 0.5*dl*k2,  Lz);
-    vec4 k4 = geodesicDeriv(s +     dl*k3,  Lz);
+  vec4 rk4Step(vec4 s, float Lz, float E2, float dl) {
+    vec4 k1 = geodesicDeriv(s,               Lz, E2);
+    vec4 k2 = geodesicDeriv(s + 0.5*dl*k1,  Lz, E2);
+    vec4 k3 = geodesicDeriv(s + 0.5*dl*k2,  Lz, E2);
+    vec4 k4 = geodesicDeriv(s +     dl*k3,  Lz, E2);
     return s + (dl / 6.0) * (k1 + 2.0*k2 + 2.0*k3 + k4);
   }
 
@@ -199,6 +200,10 @@ export const LENS_FRAG = /* glsl */`
     float th0   = u_cam_theta;
     float phi0  = u_cam_phi;
     float f0    = max(1.0 - 2.0 * u_mass / r0, 1e-4);
+    // E₀² = f(r_observer): conserved BL energy squared for a photon whose
+    // local-frame energy p^(t̂) = 1.  Must be carried through the integration
+    // so that H = 0 is satisfied (null geodesic, not massive-particle).
+    float E2    = f0;
 
     // ── Decompose ray direction into local tetrad components ───────────────
     //
@@ -207,8 +212,8 @@ export const LENS_FRAG = /* glsl */`
     //   ê_θ̂ = (cosθ cosφ, −sinθ, cosθ sinφ)  unit polar  in Cartesian
     //   ê_φ̂ = (−sinφ,     0,     cosφ)        unit azimuthal in Cartesian
     //
-    // Tetrad → BL momenta (E = 1):
-    //   p_r   = n_r̂ / √f
+    // Tetrad → BL momenta (E_BL = √f₀):
+    //   p_r   = n_r̂ / √f₀
     //   p_θ   = n_θ̂ · r₀
     //   Lz    = n_φ̂ · r₀ sinθ₀
     //
@@ -237,8 +242,11 @@ export const LENS_FRAG = /* glsl */`
     for (int i = 0; i < N_STEPS; i++) {
 
       // ── Detect disk plane crossing (cos θ changes sign → θ crosses π/2) ─
+      // Guard: require |prevCosT| > 0.05 so that floating-point noise in
+      // cos(π/2) ≈ −4e−8 for an equatorial observer does not trigger a
+      // spurious crossing at the observer's own position on the first step.
       float currCosT = cos(s.y);
-      if (prevCosT * currCosT < 0.0 && diskHits < 3) {
+      if (abs(prevCosT) > 0.05 && prevCosT * currCosT < 0.0 && diskHits < 3) {
         // Linearly interpolate to find r and φ at the crossing
         float frac  = abs(prevCosT) / (abs(prevCosT) + abs(currCosT));
         float r_hit = mix(prevR,   s.x, frac);
@@ -258,7 +266,7 @@ export const LENS_FRAG = /* glsl */`
       phi += Lz / (s.x * s.x * sinT2) * dl;
 
       // ── RK4 step for (r, θ, p_r, p_θ) ────────────────────────────────
-      s = rk4Step(s, Lz, dl);
+      s = rk4Step(s, Lz, E2, dl);
 
       // ── Horizon — absorb the ray ─────────────────────────────────────────
       if (s.x < u_r_horizon + 0.1) {
