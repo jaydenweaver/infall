@@ -2,6 +2,9 @@
 
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass }     from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { ShaderPass }     from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import type { SimControls } from '@/hooks/useSim';
 import {
   blToCartesian,
@@ -10,15 +13,16 @@ import {
   WORLD_SCALE,
   STAR_SPHERE_RADIUS,
 } from '@/lib/coordinates';
-import { createDiskMaterial, updateDiskUniforms } from '@/shaders/disk';
+import {
+  LENS_VERT,
+  LENS_FRAG,
+  createLensingUniforms,
+  updateLensingUniforms,
+} from '@/shaders/lensing';
 
-const STAR_COUNT = 8_000;
-
-const DISK_INNER_M = 2.1;
-const DISK_OUTER_M = 25.0;
-
-/** Vertical layer offsets (in M) give apparent disk thickness when viewed edge-on. */
-const DISK_LAYER_Y_M = [0.0, 0.6, -0.6];
+const STAR_COUNT    = 8_000;
+const DISK_INNER_M  = 2.1;
+const DISK_OUTER_M  = 25.0;
 
 interface Props {
   sim: SimControls;
@@ -27,7 +31,7 @@ interface Props {
 }
 
 export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
-  const mountRef  = useRef<HTMLDivElement>(null);
+  const mountRef   = useRef<HTMLDivElement>(null);
   const runningRef = useRef(running);
   runningRef.current = running;
 
@@ -74,43 +78,53 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
       new THREE.PointsMaterial({ vertexColors: true, size: 2500, sizeAttenuation: true }),
     ));
 
-    // ── Accretion disk (renderOrder 1) ────────────────────────────────────────
-    // Single ShaderMaterial shared across all layers — uniform updates apply to all.
-    const diskMat = createDiskMaterial(
-      { mass: 1.0, spin: 0.0, obs_r: 6.0, obs_phi: 0.0 },
-      DISK_INNER_M,
-      DISK_OUTER_M,
-      WORLD_SCALE,
-    );
-
-    const diskGeom = new THREE.RingGeometry(
-      DISK_INNER_M * WORLD_SCALE,
-      DISK_OUTER_M * WORLD_SCALE,
-      256, 8,
-    );
-
-    for (const yM of DISK_LAYER_Y_M) {
-      const mesh = new THREE.Mesh(diskGeom, diskMat);
-      mesh.rotation.x  = Math.PI / 2;
-      mesh.position.y  = yM * WORLD_SCALE;
-      mesh.renderOrder = 1;
-      scene.add(mesh);
-    }
-
-    // ── Black hole shadow sphere (renderOrder 2) ───────────────────────────────
-    // Rendered last so it always paints over disk pixels inside the shadow radius.
+    // ── Black hole shadow sphere ───────────────────────────────────────────────
+    // The lensing pass already traces geodesics and produces the correct photon
+    // shadow.  This opaque sphere ensures the shadow area is black even if the
+    // lensing pass is slow to converge on deeply-lensed pixels.
     const bhMesh = new THREE.Mesh(
       new THREE.SphereGeometry(2.0 * WORLD_SCALE, 64, 32),
       new THREE.MeshBasicMaterial({ color: 0x000000 }),
     );
-    bhMesh.renderOrder = 2;
     scene.add(bhMesh);
+
+    // ── Post-processing: lensing pass ─────────────────────────────────────────
+    // RenderPass → writes stars + BH sphere to tDiffuse.
+    // LensingPass → traces null geodesics per pixel, warps the background,
+    //               and composites primary + secondary disk images.
+    const initialCamPos = camera.position;
+    const initialR      = initialCamPos.length() / WORLD_SCALE; // in M
+
+    const lensingUniforms = createLensingUniforms(
+      {
+        mass:        1.0,
+        cam_r:       initialR,
+        cam_theta:   Math.PI / 2,
+        cam_phi:     0.0,
+        cam_right:   [1, 0, 0],
+        cam_up_vec:  [0, 1, 0],
+        cam_forward: [0, 0, -1],
+        resolution:  [mount.clientWidth, mount.clientHeight],
+      },
+      DISK_INNER_M,
+      DISK_OUTER_M,
+      2.0, // Schwarzschild horizon = 2M
+    );
+
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    composer.addPass(new ShaderPass({
+      uniforms:       lensingUniforms,
+      vertexShader:   LENS_VERT,
+      fragmentShader: LENS_FRAG,
+    }));
 
     // ── Resize handler ────────────────────────────────────────────────────────
     function onResize() {
       camera.aspect = mount!.clientWidth / mount!.clientHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(mount!.clientWidth, mount!.clientHeight);
+      composer.setSize(mount!.clientWidth, mount!.clientHeight);
     }
     window.addEventListener('resize', onResize);
 
@@ -127,20 +141,31 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
 
         const frame = sim.step();
         if (frame && sim.stateRef.current) {
-          // Update disk Doppler / temperature uniforms
-          updateDiskUniforms(diskMat, {
-            mass:    sim.stateRef.current.mass,
-            spin:    sim.stateRef.current.spin,
-            obs_r:   frame.r,
-            obs_phi: frame.phi,
-          });
-
           // Camera follows the observer's geodesic
           const [cx, cy, cz] = blToCartesian(frame.r, frame.theta, frame.phi);
           camera.position.set(cx, cy, cz);
           const [ux, uy, uz] = cameraUp(frame.theta, frame.phi);
           camera.up.set(ux, uy, uz);
           camera.lookAt(0, 0, 0);
+          camera.updateMatrixWorld();
+
+          // Derive camera basis vectors from the updated camera transform
+          const camFwd = camera.position.clone().negate().normalize();
+          const camRight = new THREE.Vector3()
+            .crossVectors(camFwd, camera.up)
+            .normalize();
+
+          // Update lensing pass uniforms
+          updateLensingUniforms(lensingUniforms, {
+            mass:        sim.stateRef.current.mass,
+            cam_r:       frame.r,
+            cam_theta:   frame.theta,
+            cam_phi:     frame.phi,
+            cam_right:   [camRight.x, camRight.y, camRight.z],
+            cam_up_vec:  [camera.up.x, camera.up.y, camera.up.z],
+            cam_forward: [camFwd.x, camFwd.y, camFwd.z],
+            resolution:  [mount!.clientWidth, mount!.clientHeight],
+          });
 
           // Deepen to black as observer descends past the horizon
           if (frame.inside_horizon) {
@@ -152,7 +177,7 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
         }
       }
 
-      renderer.render(scene, camera);
+      composer.render();
     }
 
     animate();
@@ -160,6 +185,7 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
     return () => {
       cancelAnimationFrame(rafId);
       window.removeEventListener('resize', onResize);
+      composer.dispose();
       renderer.dispose();
       mount.removeChild(renderer.domElement);
     };
