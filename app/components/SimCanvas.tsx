@@ -10,21 +10,15 @@ import {
   WORLD_SCALE,
   STAR_SPHERE_RADIUS,
 } from '@/lib/coordinates';
+import { createDiskMaterial, updateDiskUniforms } from '@/shaders/disk';
 
 const STAR_COUNT = 8_000;
 
-const DISK_INNER_M = 2.1;  // just outside the event horizon (2M)
+const DISK_INNER_M = 2.1;
 const DISK_OUTER_M = 25.0;
 
-/**
- * Three stacked layers give the disk apparent thickness when viewed edge-on.
- * Opacities are kept low so additive blending doesn't blow out to white.
- */
-const DISK_LAYERS: Array<{ yM: number; opacity: number }> = [
-  { yM:  0.0, opacity: 0.22 },
-  { yM:  0.6, opacity: 0.08 },
-  { yM: -0.6, opacity: 0.08 },
-];
+/** Vertical layer offsets (in M) give apparent disk thickness when viewed edge-on. */
+const DISK_LAYER_Y_M = [0.0, 0.6, -0.6];
 
 interface Props {
   sim: SimControls;
@@ -32,28 +26,8 @@ interface Props {
   timeWarpRef: React.MutableRefObject<number>;
 }
 
-/** Ring with a temperature-gradient vertex colour: blue-white at the ISCO, deep red at outer edge. */
-function makeDiskRing(innerW: number, outerW: number): THREE.BufferGeometry {
-  const geom = new THREE.RingGeometry(innerW, outerW, 256, 8);
-  const pos = geom.attributes.position;
-  const col = new Float32Array(pos.count * 3);
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const z = pos.getZ(i);
-    const t = Math.max(0, Math.min(1,
-      (Math.sqrt(x * x + z * z) - innerW) / (outerW - innerW)
-    ));
-    // inner: warm white-orange → outer: deep red
-    col[i * 3]     = 1.0;
-    col[i * 3 + 1] = Math.max(0, 0.75 * (1 - t));
-    col[i * 3 + 2] = Math.max(0, 0.45 * (1 - t * 2));
-  }
-  geom.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  return geom;
-}
-
 export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
-  const mountRef = useRef<HTMLDivElement>(null);
+  const mountRef  = useRef<HTMLDivElement>(null);
   const runningRef = useRef(running);
   runningRef.current = running;
 
@@ -69,12 +43,12 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
     mount.appendChild(renderer.domElement);
 
     // ── Scene & Camera ────────────────────────────────────────────────────────
-    const scene = new THREE.Scene();
+    const scene  = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(
       90,
       mount.clientWidth / mount.clientHeight,
       0.1,
-      STAR_SPHERE_RADIUS * 2
+      STAR_SPHERE_RADIUS * 2,
     );
     camera.position.set(0, 0, 8 * WORLD_SCALE);
     camera.lookAt(0, 0, 0);
@@ -85,48 +59,49 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
     for (let i = 0; i < STAR_COUNT; i++) {
       const roll = Math.random();
       if (roll < 0.15) {
-        starCol[i*3]=0.75; starCol[i*3+1]=0.88; starCol[i*3+2]=1.0;   // blue-white
+        starCol[i*3]=0.75; starCol[i*3+1]=0.88; starCol[i*3+2]=1.0;  // blue-white
       } else if (roll < 0.30) {
-        starCol[i*3]=1.0;  starCol[i*3+1]=0.80; starCol[i*3+2]=0.55;  // warm orange
+        starCol[i*3]=1.0;  starCol[i*3+1]=0.80; starCol[i*3+2]=0.55; // warm orange
       } else {
-        starCol[i*3]=1.0;  starCol[i*3+1]=1.0;  starCol[i*3+2]=1.0;   // white
+        starCol[i*3]=1.0;  starCol[i*3+1]=1.0;  starCol[i*3+2]=1.0;  // white
       }
     }
     const starGeom = new THREE.BufferGeometry();
     starGeom.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
-    starGeom.setAttribute('color', new THREE.BufferAttribute(starCol, 3));
+    starGeom.setAttribute('color',    new THREE.BufferAttribute(starCol, 3));
     scene.add(new THREE.Points(
       starGeom,
-      new THREE.PointsMaterial({ vertexColors: true, size: 2500, sizeAttenuation: true })
+      new THREE.PointsMaterial({ vertexColors: true, size: 2500, sizeAttenuation: true }),
     ));
 
     // ── Accretion disk (renderOrder 1) ────────────────────────────────────────
-    // Rendered before the BH sphere so depth-test occludes disk pixels behind it.
-    // depthWrite: false prevents layers from blocking each other.
-    const diskGeom = makeDiskRing(DISK_INNER_M * WORLD_SCALE, DISK_OUTER_M * WORLD_SCALE);
-    for (const { yM, opacity } of DISK_LAYERS) {
-      const mesh = new THREE.Mesh(
-        diskGeom,
-        new THREE.MeshBasicMaterial({
-          vertexColors: true,
-          side: THREE.DoubleSide,
-          transparent: true,
-          opacity,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        })
-      );
-      mesh.rotation.x = Math.PI / 2;
-      mesh.position.y = yM * WORLD_SCALE;
+    // Single ShaderMaterial shared across all layers — uniform updates apply to all.
+    const diskMat = createDiskMaterial(
+      { mass: 1.0, spin: 0.0, obs_r: 6.0, obs_phi: 0.0 },
+      DISK_INNER_M,
+      DISK_OUTER_M,
+      WORLD_SCALE,
+    );
+
+    const diskGeom = new THREE.RingGeometry(
+      DISK_INNER_M * WORLD_SCALE,
+      DISK_OUTER_M * WORLD_SCALE,
+      256, 8,
+    );
+
+    for (const yM of DISK_LAYER_Y_M) {
+      const mesh = new THREE.Mesh(diskGeom, diskMat);
+      mesh.rotation.x  = Math.PI / 2;
+      mesh.position.y  = yM * WORLD_SCALE;
       mesh.renderOrder = 1;
       scene.add(mesh);
     }
 
     // ── Black hole shadow sphere (renderOrder 2) ───────────────────────────────
-    // Rendered last so it paints over any disk/glow pixels inside the shadow.
+    // Rendered last so it always paints over disk pixels inside the shadow radius.
     const bhMesh = new THREE.Mesh(
       new THREE.SphereGeometry(2.0 * WORLD_SCALE, 64, 32),
-      new THREE.MeshBasicMaterial({ color: 0x000000 })
+      new THREE.MeshBasicMaterial({ color: 0x000000 }),
     );
     bhMesh.renderOrder = 2;
     scene.add(bhMesh);
@@ -151,7 +126,16 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
         }
 
         const frame = sim.step();
-        if (frame) {
+        if (frame && sim.stateRef.current) {
+          // Update disk Doppler / temperature uniforms
+          updateDiskUniforms(diskMat, {
+            mass:    sim.stateRef.current.mass,
+            spin:    sim.stateRef.current.spin,
+            obs_r:   frame.r,
+            obs_phi: frame.phi,
+          });
+
+          // Camera follows the observer's geodesic
           const [cx, cy, cz] = blToCartesian(frame.r, frame.theta, frame.phi);
           camera.position.set(cx, cy, cz);
           const [ux, uy, uz] = cameraUp(frame.theta, frame.phi);
