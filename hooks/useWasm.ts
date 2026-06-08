@@ -47,7 +47,7 @@ export function useWasm(): UseWasmResult {
         const mod = await import('infall-wasm');
 
         // wasm-bindgen bundler target: default export is the async init fn
-        const initFn = mod.default as (() => Promise<void>) | undefined;
+        const initFn = mod.default as unknown as (() => Promise<void>) | undefined;
         if (typeof initFn === 'function') {
           await initFn();
         }
