@@ -74,6 +74,9 @@ pub struct FrameData {
     pub tetrad_theta: [f64; 3],
     pub tetrad_phi: [f64; 3],
 
-    /// Whether the simulation has ended (horizon crossing or escape).
+    /// True once the observer has crossed the outer event horizon.
+    /// The renderer uses this to begin the interior fade sequence.
+    pub inside_horizon: bool,
+    /// Whether the simulation has ended (singularity or escape).
     pub terminated: bool,
 }
