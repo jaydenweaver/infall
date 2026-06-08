@@ -1,17 +1,21 @@
 //! RK4 integrator for Kerr geodesics.
 //!
-//! State vector layout: [r, θ, φ, ṙ, θ̇]
-//! Constants of motion (E, Lz, Q) are held fixed — φ̇ and ṫ are derived each step.
+//! State vector layout: [r, θ, φ̃, ṙ, θ̇]
+//! φ̃ is the ingoing Kerr azimuthal coordinate, regular at the outer horizon.
+//! Constants of motion (E, Lz, Q) are held fixed — φ̃̇ and ṫ are derived each step.
 //!
-//! Integration terminates when:
-//!   - r < r_horizon + HORIZON_MARGIN  (horizon crossing)
-//!   - r > R_ESCAPE                    (particle escaped to infinity)
-//!   - proper time exceeds max_tau
+//! The integration crosses the outer event horizon without stopping.
+//! Termination conditions:
+//!   - r < SINGULARITY_RADIUS  (near the ring/point singularity)
+//!   - r > R_ESCAPE            (particle escaped to infinity)
 
 use crate::kerr::{geodesic_rhs, ConservedQuantities, KerrParams, ParticleType};
 use crate::types::{FrameData, SimState};
 
-const HORIZON_MARGIN: f64 = 1e-3; // stop this far above the horizon
+/// Stop this close to r = 0. Avoids the ring singularity (Kerr) / point
+/// singularity (Schwarzschild) where curvature diverges.
+const SINGULARITY_RADIUS: f64 = 0.02; // in units of M
+
 const R_ESCAPE: f64 = 1e6; // consider escaped if r > this (in units of M)
 
 /// Step size used in proper time units (relative to M).
@@ -80,8 +84,8 @@ pub fn step(sim: SimState, dtau: Option<f64>) -> Option<(SimState, FrameData)> {
     let tau = sim.proper_time + dtau;
 
     // Termination conditions
-    let r_horizon = params.event_horizon();
-    let terminated = r < r_horizon + HORIZON_MARGIN * params.mass || r > R_ESCAPE * params.mass;
+    let terminated = r < SINGULARITY_RADIUS * params.mass || r > R_ESCAPE * params.mass;
+    let inside_horizon = r < params.event_horizon();
 
     // φ̇ at new position (for tetrad construction)
     let phi_dot = {
@@ -120,10 +124,11 @@ pub fn step(sim: SimState, dtau: Option<f64>) -> Option<(SimState, FrameData)> {
         phi,
         proper_time: tau,
         doppler_factor: doppler,
-        // Tetrad as flat arrays [e_r, e_theta, e_phi] in BL coordinates
+        // Tetrad as flat arrays [e_r, e_theta, e_phi] in BL/IK coordinates
         tetrad_r: tetrad[0],
         tetrad_theta: tetrad[1],
         tetrad_phi: tetrad[2],
+        inside_horizon,
         terminated,
     };
 
@@ -244,6 +249,46 @@ mod tests {
         }
     }
 
+    /// Build a sim at radius `r` (equatorial) with the physically consistent
+    /// inward r_dot for the given conserved quantities: ṙ = -√R(r) / Σ(r).
+    ///
+    /// This satisfies the first integral Σ²ṙ² = R, which the second-order
+    /// geodesic equation assumes. Violating it causes unphysical behaviour
+    /// inside the horizon (incorrect sign of r̈).
+    fn make_infalling_sim(mass: f64, spin: f64, r: f64) -> SimState {
+        let params = KerrParams::new(mass, spin);
+        let r_isco = params.isco_radius(true);
+        let conserved = ConservedQuantities::circular_equatorial(&params, r_isco, true);
+        let theta = std::f64::consts::FRAC_PI_2;
+
+        let sigma = params.sigma(r, theta);
+        let a = params.spin;
+        let e = conserved.energy;
+        let lz = conserved.ang_momentum_z;
+        let q = conserved.carter;
+        let p_val = (r * r + a * a) * e - a * lz;
+        let xi = (lz - a * e).powi(2) + q + r * r; // timelike: μ = 1
+        let big_r = p_val * p_val - params.delta(r) * xi;
+        // big_r should be ≥ 0 at any accessible r; clamp to avoid √(neg) from float noise
+        let r_dot = -(big_r.max(0.0).sqrt()) / sigma;
+
+        SimState {
+            mass,
+            spin,
+            r,
+            theta,
+            phi: 0.0,
+            r_dot,
+            theta_dot: 0.0,
+            proper_time: 0.0,
+            energy: e,
+            lz,
+            carter: q,
+            time_warp: 1.0,
+            terminated: false,
+        }
+    }
+
     #[test]
     fn step_returns_some_when_not_terminated() {
         let sim = make_sim_at_isco(0.0);
@@ -285,20 +330,49 @@ mod tests {
     }
 
     #[test]
-    fn terminates_near_horizon() {
-        // Fast-forward into the black hole by using a large inward r_dot
-        let mut sim = make_sim_at_isco(0.0);
-        sim.r_dot = -10.0; // aggressive infall
-        sim.r = 2.1; // just outside the Schwarzschild horizon
+    fn continues_through_horizon() {
+        // The simulation must NOT terminate at the horizon — it should cross it
+        // and continue toward the singularity.
+        // Start just outside the Schwarzschild horizon with physical r_dot.
+        let sim = make_infalling_sim(1.0, 0.0, 2.1);
 
-        // Step until termination or max iterations
+        let mut current = sim;
+        let mut crossed = false;
+        for _ in 0..10_000 {
+            match step(current, Some(1e-3)) {
+                Some((s, frame)) => {
+                    if frame.inside_horizon {
+                        crossed = true;
+                        break;
+                    }
+                    current = s;
+                }
+                None => break,
+            }
+        }
+        assert!(crossed, "simulation should cross the event horizon");
+    }
+
+    #[test]
+    fn terminates_at_singularity() {
+        // After crossing the horizon the simulation should eventually terminate
+        // as r approaches the singularity. Start just inside with physical r_dot.
+        let sim = make_infalling_sim(1.0, 0.0, 2.05);
+
         let mut current = sim;
         let mut terminated = false;
-        for _ in 0..10_000 {
+        for _ in 0..100_000 {
             match step(current, Some(1e-4)) {
                 Some((s, _)) => {
                     if s.terminated {
                         terminated = true;
+                        // r should be near 0, not near 2 (the horizon)
+                        let r_horizon = KerrParams::new(s.mass, s.spin).event_horizon();
+                        assert!(
+                            s.r < r_horizon * 0.5,
+                            "termination should occur inside horizon, got r = {}",
+                            s.r
+                        );
                         break;
                     }
                     current = s;
@@ -309,7 +383,7 @@ mod tests {
                 }
             }
         }
-        assert!(terminated, "simulation should terminate near horizon");
+        assert!(terminated, "simulation should terminate near singularity");
     }
 
     #[test]
@@ -322,18 +396,21 @@ mod tests {
     }
 
     #[test]
-    fn kerr_infall_terminates() {
-        // Spinning black hole — infall should also terminate
-        let mut sim = make_sim_at_isco(0.9);
-        sim.r_dot = -1.0;
+    fn kerr_infall_terminates_at_singularity() {
+        // Spinning black hole — infall should cross horizon and terminate near singularity.
+        // Kerr (a=0.9): r+ ≈ 1.436M. Start just outside with physical r_dot.
+        let sim = make_infalling_sim(1.0, 0.9, 1.5);
 
         let mut current = sim;
         let mut terminated = false;
-        for _ in 0..100_000 {
+        for _ in 0..200_000 {
             match step(current, Some(1e-3)) {
                 Some((s, _)) => {
                     if s.terminated {
                         terminated = true;
+                        // Must have crossed the horizon
+                        let r_horizon = KerrParams::new(s.mass, s.spin).event_horizon();
+                        assert!(s.r < r_horizon, "should terminate inside horizon");
                         break;
                     }
                     current = s;
@@ -344,6 +421,6 @@ mod tests {
                 }
             }
         }
-        assert!(terminated, "Kerr infall should terminate near horizon");
+        assert!(terminated, "Kerr infall should terminate near singularity");
     }
 }
