@@ -1,0 +1,37 @@
+{
+  "name": "infall",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "jest --passWithNoTests",
+    "test:watch": "jest --watch",
+    "build:wasm": "cd wasm && wasm-pack build --target bundler --out-dir ../wasm-pkg",
+    "setup": "npm run build:wasm && npm install"
+  },
+  "dependencies": {
+    "infall-wasm": "file:./wasm-pkg",
+    "next": "^15.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.176.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.3.0",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/three": "^0.176.0",
+    "autoprefixer": "^10.4.20",
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "postcss": "^8.5.1",
+    "tailwindcss": "^3.4.17",
+    "ts-jest": "^29.3.2",
+    "typescript": "^5"
+  }
+}
