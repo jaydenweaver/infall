@@ -6,19 +6,23 @@ import type { BlackHoleParams } from '@/lib/wasm-types';
 interface Props {
   params: BlackHoleParams;
   running: boolean;
+  camDistance: number;
   onParamsChange: (p: BlackHoleParams) => void;
   onRunningChange: (r: boolean) => void;
   onReset: () => void;
   onTimeWarp: (v: number) => void;
+  onCamDistanceChange: (v: number) => void;
 }
 
 export default function Controls({
   params,
   running,
+  camDistance,
   onParamsChange,
   onRunningChange,
   onReset,
   onTimeWarp,
+  onCamDistanceChange,
 }: Props) {
   const [timeWarp, setTimeWarp] = useState(1);
 
@@ -32,15 +36,15 @@ export default function Controls({
       {/* Camera distance */}
       <label className="flex flex-col gap-1">
         <span className="text-gray-500">
-          Distance <span className="text-white font-bold">{params.initialR.toFixed(0)} M</span>
+          Distance <span className="text-white font-bold">{camDistance.toFixed(0)} M</span>
         </span>
         <input
           type="range"
           min={6}
           max={50}
           step={1}
-          value={params.initialR}
-          onChange={(e) => onParamsChange({ ...params, initialR: Number(e.target.value) })}
+          value={camDistance}
+          onChange={(e) => onCamDistanceChange(Number(e.target.value))}
           className="accent-orange-500"
         />
       </label>

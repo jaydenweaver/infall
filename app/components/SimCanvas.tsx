@@ -34,9 +34,10 @@ interface Props {
   sim: SimControls;
   running: boolean;
   timeWarpRef: React.MutableRefObject<number>;
+  camDistanceRef: React.MutableRefObject<number>;
 }
 
-export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
+export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }: Props) {
   const mountRef   = useRef<HTMLDivElement>(null);
   const runningRef = useRef(running);
   runningRef.current = running;
@@ -141,46 +142,28 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
     // ── Animation loop ────────────────────────────────────────────────────────
     let rafId: number;
 
+    // Latest orbital angles from the sim — updated each step, read every frame
+    // so the camera stays live even when paused or when only the distance changes.
+    let latestTheta = initialTheta;
+    let latestPhi   = initialPhi;
+    let latestMass  = 1.0;
+    let latestSpin  = 0.0;
+
     function animate() {
       rafId = requestAnimationFrame(animate);
 
+      // ── Advance simulation ───────────────────────────────────────────────
       if (runningRef.current) {
         if (sim.stateRef.current) {
           sim.stateRef.current.time_warp = timeWarpRef.current;
         }
-
         const frame = sim.step();
         if (frame && sim.stateRef.current) {
-          // Camera follows the observer's geodesic, elevated above the disk plane
-          // so the lensing shader's plane-crossing detector sees the primary disk image.
-          const renderTheta = frame.theta - CAM_THETA_ELEVATION;
-          const [cx, cy, cz] = blToCartesian(frame.r, renderTheta, frame.phi);
-          camera.position.set(cx, cy, cz);
-          const [ux, uy, uz] = cameraUp(renderTheta, frame.phi);
-          camera.up.set(ux, uy, uz);
-          camera.lookAt(0, 0, 0);
-          camera.updateMatrixWorld();
+          latestTheta = frame.theta;
+          latestPhi   = frame.phi;
+          latestMass  = sim.stateRef.current.mass;
+          latestSpin  = sim.stateRef.current.spin;
 
-          // Derive camera basis vectors from the updated camera transform
-          const camFwd = camera.position.clone().negate().normalize();
-          const camRight = new THREE.Vector3()
-            .crossVectors(camFwd, camera.up)
-            .normalize();
-
-          // Update the cloned uniforms that the ShaderPass actually reads
-          updateLensingUniforms(lensUniforms, {
-            mass:        sim.stateRef.current.mass,
-            spin:        sim.stateRef.current.spin,
-            cam_r:       frame.r,
-            cam_theta:   renderTheta,
-            cam_phi:     frame.phi,
-            cam_right:   [camRight.x, camRight.y, camRight.z],
-            cam_up_vec:  [camera.up.x, camera.up.y, camera.up.z],
-            cam_forward: [camFwd.x, camFwd.y, camFwd.z],
-            resolution:  [mount!.clientWidth, mount!.clientHeight],
-          });
-
-          // Deepen to black as observer descends past the horizon
           if (frame.inside_horizon) {
             const depth = Math.max(0, Math.min(1, 1 - frame.r / 2));
             renderer.setClearColor(new THREE.Color(depth * 0.02, 0, depth * 0.03), 1);
@@ -189,6 +172,33 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
           }
         }
       }
+
+      // ── Update camera every frame (responds to distance slider live) ─────
+      const r           = camDistanceRef.current;
+      const renderTheta = latestTheta - CAM_THETA_ELEVATION;
+      const [cx, cy, cz] = blToCartesian(r, renderTheta, latestPhi);
+      camera.position.set(cx, cy, cz);
+      const [ux, uy, uz] = cameraUp(renderTheta, latestPhi);
+      camera.up.set(ux, uy, uz);
+      camera.lookAt(0, 0, 0);
+      camera.updateMatrixWorld();
+
+      const camFwd   = camera.position.clone().negate().normalize();
+      const camRight = new THREE.Vector3()
+        .crossVectors(camFwd, camera.up)
+        .normalize();
+
+      updateLensingUniforms(lensUniforms, {
+        mass:        latestMass,
+        spin:        latestSpin,
+        cam_r:       r,
+        cam_theta:   renderTheta,
+        cam_phi:     latestPhi,
+        cam_right:   [camRight.x, camRight.y, camRight.z],
+        cam_up_vec:  [camera.up.x, camera.up.y, camera.up.z],
+        cam_forward: [camFwd.x, camFwd.y, camFwd.z],
+        resolution:  [mount!.clientWidth, mount!.clientHeight],
+      });
 
       composer.render();
     }

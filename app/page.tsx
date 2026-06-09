@@ -13,7 +13,14 @@ export default function Home() {
   const { ready, api, error } = useWasm();
   const [params, setParams] = useState<BlackHoleParams>(DEFAULT_PARAMS);
   const [running, setRunning] = useState(true);
-  const timeWarpRef = useRef(1);
+  const timeWarpRef    = useRef(1);
+  const camDistanceRef = useRef(8);
+  const [camDistance, setCamDistance] = useState(8);
+
+  function handleCamDistance(v: number) {
+    camDistanceRef.current = v;
+    setCamDistance(v);
+  }
 
   const sim = useSim(ready ? api : null, params);
 
@@ -41,7 +48,7 @@ export default function Home() {
         </div>
       )}
 
-      <SimCanvas sim={sim} running={running} timeWarpRef={timeWarpRef} />
+      <SimCanvas sim={sim} running={running} timeWarpRef={timeWarpRef} camDistanceRef={camDistanceRef} />
 
       <HUD
         snapshot={sim.hudSnapshot}
@@ -52,10 +59,12 @@ export default function Home() {
       <Controls
         params={params}
         running={running}
+        camDistance={camDistance}
         onParamsChange={handleParamsChange}
         onRunningChange={setRunning}
         onReset={handleReset}
         onTimeWarp={handleTimeWarp}
+        onCamDistanceChange={handleCamDistance}
       />
     </main>
   );
