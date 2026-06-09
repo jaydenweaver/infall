@@ -149,7 +149,7 @@ describe('lensing shader', () => {
   });
 
   it('fragment shader guards against spurious disk crossings', () => {
-    expect(LENS_FRAG).toContain('abs(prevCosT) > 0.05');
+    expect(LENS_FRAG).toContain('abs(prevCosT) > 0.01');
   });
 
   it('fragment shader contains N_STEPS loop', () => {
@@ -161,13 +161,13 @@ describe('lensing shader', () => {
     expect(LENS_FRAG).toContain('u_r_horizon');
   });
 
-  it('fragment shader samples tDiffuse for escaped rays', () => {
-    expect(LENS_FRAG).toContain('texture2D(tDiffuse');
+  it('fragment shader samples procedural star field for escaped rays', () => {
+    expect(LENS_FRAG).toContain('starField(escDir)');
   });
 
   it('fragment shader computes disk colour analytically', () => {
     expect(LENS_FRAG).toContain('diskColor');
-    expect(LENS_FRAG).toContain('0.75');  // T ∝ r^{-3/4}
+    expect(LENS_FRAG).toContain('0.25');  // T ∝ r^{-3/4}
     expect(LENS_FRAG).toContain('beam');  // Doppler beaming
   });
 

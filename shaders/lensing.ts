@@ -301,23 +301,18 @@ export const LENS_FRAG = /* glsl */`
     float prevPhi   = phi;
     vec3  diskAccum = vec3(0.0);
     int   diskHits  = 0;
+    float totalDphi = 0.0;   // accumulated |Δφ| — used to reject secondary images
 
     for (int i = 0; i < N_STEPS; i++) {
 
       // ── Detect disk plane crossing (cos θ changes sign → θ crosses π/2) ─
-      // Guard: require |prevCosT| > 0.05 so that floating-point noise in
-      // cos(π/2) ≈ −4e−8 for an equatorial observer does not trigger a
-      // spurious crossing at the observer's own position on the first step.
       float currCosT = cos(s.y);
-      // Guard lowered to 0.01: the 0.05 threshold blocked genuine primary-disk
-      // crossings for a camera elevated ~0.2 rad above the equatorial plane,
-      // where prevCosT is only ~0.02-0.04 at the moment of crossing.
-      // 0.01 still rejects floating-point noise (cos(π/2) ≈ −4e−8).
-      //
-      // Higher-order images are attenuated exponentially: each successive
-      // crossing of the disk has contributed ~e^{-π} ≈ 0.04× the brightness
-      // of the previous one (photon-sphere demagnification).
-      if (abs(prevCosT) > 0.01 && prevCosT * currCosT < 0.0 && diskHits < 1) {
+      // Accept only the first disk crossing (primary image) that occurs before
+      // the ray has traveled more than π radians in azimuth.  Crossings beyond
+      // π are secondary/back-side images; they form the teardrop artefact at
+      // the poles when the ray orbits the BH and crosses the disk from behind.
+      if (abs(prevCosT) > 0.01 && prevCosT * currCosT < 0.0
+          && diskHits < 1 && totalDphi < PI) {
         float frac  = abs(prevCosT) / (abs(prevCosT) + abs(currCosT));
         float r_hit = mix(prevR,   s.x, frac);
         float p_hit = mix(prevPhi, phi, frac);
@@ -333,7 +328,9 @@ export const LENS_FRAG = /* glsl */`
 
       // ── Advance φ with Euler using current-step values ─────────────────
       float sinT2 = max(sin(s.y) * sin(s.y), 1e-8);
-      phi += Lz / (s.x * s.x * sinT2) * dl;
+      float dphiStep = Lz / (s.x * s.x * sinT2) * dl;
+      totalDphi += abs(dphiStep);
+      phi += dphiStep;
 
       // ── RK4 step for (r, θ, p_r, p_θ) ────────────────────────────────
       s = rk4Step(s, Lz, E2, dl);
