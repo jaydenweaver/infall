@@ -301,18 +301,24 @@ export const LENS_FRAG = /* glsl */`
     float prevPhi   = phi;
     vec3  diskAccum = vec3(0.0);
     int   diskHits  = 0;
-    float totalDphi = 0.0;   // accumulated |Δφ| — used to reject secondary images
+    float totalDphi = 0.0;   // accumulated |Δφ| — rejects secondary images (large Lz)
+    // Save the initial theta-momentum sign.  Direct disk crossings have the ray
+    // moving TOWARD the equatorial plane from the start (pth has the same sign
+    // as (π/2 − θ_cam)).  Near-polar bounce rays start going AWAY from the disk
+    // (opposite sign), loop back through θ=π/2, and form the teardrop artefacts;
+    // they are rejected by requiring initialPth*(PI/2−u_cam_theta) ≥ 0.
+    float initialPth = s.w;
 
     for (int i = 0; i < N_STEPS; i++) {
 
       // ── Detect disk plane crossing (cos θ changes sign → θ crosses π/2) ─
       float currCosT = cos(s.y);
-      // Accept only the first disk crossing (primary image) that occurs before
-      // the ray has traveled more than π radians in azimuth.  Crossings beyond
-      // π are secondary/back-side images; they form the teardrop artefact at
-      // the poles when the ray orbits the BH and crosses the disk from behind.
+      // Two guards together reject all secondary / back-side images:
+      //  • totalDphi < PI  — drops crossings after >π of azimuthal travel (large-Lz secondaries)
+      //  • initialPth*(PI/2−cam_theta) ≥ 0 — drops near-polar bounce crossings (Lz≈0 teardrops)
       if (abs(prevCosT) > 0.01 && prevCosT * currCosT < 0.0
-          && diskHits < 1 && totalDphi < PI) {
+          && diskHits < 1 && totalDphi < PI
+          && initialPth * (PI / 2.0 - u_cam_theta) >= 0.0) {
         float frac  = abs(prevCosT) / (abs(prevCosT) + abs(currCosT));
         float r_hit = mix(prevR,   s.x, frac);
         float p_hit = mix(prevPhi, phi, frac);
