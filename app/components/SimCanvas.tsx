@@ -149,6 +149,9 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
     let latestMass  = 1.0;
     let latestSpin  = 0.0;
 
+    // Frame counter for Halton TAA jitter (cycles through 16 sub-pixel positions)
+    let frameCount = 0;
+
     function animate() {
       rafId = requestAnimationFrame(animate);
 
@@ -199,6 +202,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
         cam_forward: [camFwd.x, camFwd.y, camFwd.z],
         resolution:  [mount!.clientWidth, mount!.clientHeight],
       });
+      lensUniforms.u_frame.value = frameCount++;
 
       composer.render();
     }

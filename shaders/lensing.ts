@@ -1,16 +1,17 @@
 /**
  * Gravitational lensing post-process pass.
  *
- * Fragment shader integrates null geodesics backward through the Schwarzschild
- * metric using RK4 per pixel, producing:
- *   - Black hole shadow (photon escape boundary)
- *   - Photon ring (geodesics that orbit near r = 3M)
- *   - Warped star field (background UV deflection)
- *   - Primary + secondary accretion disk images (disk colour computed analytically)
+ * Fragment shader integrates null geodesics backward through the Kerr
+ * metric using a symplectic Störmer-Verlet integrator per pixel.
  *
- * Designed to run as a Three.js ShaderPass via EffectComposer.
- * The previous RenderPass writes the star field to tDiffuse; the lensing pass
- * warps it and composites the disk on top.
+ * Key implementation choices (matching reference quality):
+ *   - Plane-crossing disk: sample accretion disk exactly at θ=π/2 crossings.
+ *     This prevents near-polar orbiting photons from accumulating many
+ *     volumetric contributions that produce teardrop/chain-of-dots artifacts.
+ *   - Halton-sequence TAA jitter: sub-pixel ray offset cycles through 16
+ *     low-discrepancy positions each frame, smoothing photon-ring edges.
+ *   - Störmer-Verlet symplectic integrator: preserves the Carter constant
+ *     better than RK4 for photons that orbit many times near the photon sphere.
  */
 
 // ── Vertex shader (full-screen quad passthrough) ───────────────────────────
@@ -28,7 +29,7 @@ export const LENS_VERT = /* glsl */`
 export const LENS_FRAG = /* glsl */`
   precision highp float;
 
-  // Input scene (star field rendered by RenderPass)
+  // Input scene texture (not used for stars — stars are procedural)
   uniform sampler2D tDiffuse;
   uniform vec2      u_resolution;
 
@@ -36,7 +37,7 @@ export const LENS_FRAG = /* glsl */`
   uniform float u_mass;
   uniform float u_r_inner;   // inner disk edge in M
   uniform float u_r_outer;   // outer disk edge in M
-  uniform float u_r_horizon; // event horizon radius in M  (= 2M for Schwarzschild)
+  uniform float u_r_horizon; // event horizon radius in M
 
   // Observer position in Boyer-Lindquist coords (in M)
   uniform float u_cam_r;
@@ -44,18 +45,36 @@ export const LENS_FRAG = /* glsl */`
   uniform float u_cam_phi;
 
   // Camera orthonormal basis in world Cartesian (normalised)
-  // Convention: y = polar axis, disk in xz-plane
   uniform vec3  u_cam_right;
   uniform vec3  u_cam_up_vec;
   uniform vec3  u_cam_forward;
-  uniform float u_fov_tan;  // tan(fov / 2);  = 1.0 for 90° FOV
-  uniform float u_spin;     // dimensionless spin  a/M  ∈ [0, 1)
+  uniform float u_fov_tan;  // tan(fov/2) = 1.0 for 90° FOV
+  uniform float u_spin;     // dimensionless spin a/M ∈ [0, 1)
+
+  // TAA frame counter (float, incremented each rendered frame)
+  uniform float u_frame;
 
   varying vec2 vUv;
 
   // ─────────────────────────────────────────────────────────────────────────
-  const float PI      = 3.14159265358979;
-  const int   N_STEPS = 150;   // RK4 iterations per pixel
+  const float PI        = 3.14159265358979;
+  const float PI_2      = PI * 0.5;
+  const int   N_STEPS   = 250;   // symplectic integrator iterations per pixel
+  const int   MAX_CROSS = 3;     // max equatorial-plane crossings to accumulate
+
+  // ── Halton low-discrepancy sequence (float version, base b) ─────────────
+  float halton(float n, float b) {
+    float f = 1.0;
+    float r = 0.0;
+    float i = n;
+    for (int j = 0; j < 16; j++) {
+      if (i < 0.5) break;
+      f /= b;
+      r += f * mod(i, b);
+      i  = floor(i / b);
+    }
+    return r;
+  }
 
   // ── Blackbody colour ramp (cool red → warm orange → hot white) ───────────
   vec3 blackbodyColor(float tf) {
@@ -68,24 +87,17 @@ export const LENS_FRAG = /* glsl */`
   }
 
   // ── Analytic disk colour at equatorial crossing (r_M, phi) ──────────────
-  // Replicates the disk shader's temperature gradient + Doppler beaming.
-  // u_r_inner / u_r_outer are stored in multiples of M; scale by u_mass to
-  // get absolute Boyer-Lindquist coordinates for any black hole mass.
   vec3 diskColor(float r_M, float phi) {
     float rInner = u_r_inner * u_mass;
     float rOuter = u_r_outer * u_mass;
     if (r_M < rInner || r_M > rOuter) return vec3(0.0);
 
-    // Page-Thorne inner boundary: emission → 0 exactly at the ISCO.
-    // pow(rInner/r_M, 0.25) alone equals 1.0 at r=rInner (maximum!), which
-    // creates a bright ISCO ring that lenses into the teardrop caustic.
-    // Multiplying by (1 − √(rInner/r_M)) forces a physical zero at rInner
-    // and peaks the brightness at ~2–3× rInner, matching the Page-Thorne model.
+    // Page-Thorne inner boundary: emission → 0 at ISCO, peaks at ~2-3× rInner
     float pageThorn = max(0.0, 1.0 - sqrt(rInner / r_M));
     float temp      = clamp(pow(rInner / r_M, 0.25), 0.0, 1.0) * pageThorn;
-    vec3  col    = blackbodyColor(clamp(pow(rInner / r_M, 0.25), 0.0, 1.0));
+    vec3  col       = blackbodyColor(clamp(pow(rInner / r_M, 0.25), 0.0, 1.0));
 
-    // Keplerian tangential speed (Newtonian,  units of c)
+    // Keplerian tangential speed (Newtonian, units of c)
     float v_kep  = clamp(sqrt(u_mass / max(r_M, 0.1)), 0.0, 0.92);
     float gamma_ = 1.0 / sqrt(max(1.0 - v_kep * v_kep, 1e-6));
 
@@ -94,13 +106,12 @@ export const LENS_FRAG = /* glsl */`
     float dz  = u_cam_r * sin(u_cam_phi) - r_M * sin(phi);
     float ll  = length(vec2(dx, dz));
 
-    // β = v_kep · (disk_tangent · LOS_unit);  disk tangent = (-sin φ, cos φ)
+    // β = v_kep · (disk_tangent · LOS_unit); disk tangent = (-sinφ, cosφ)
     float beta = ll > 0.01
       ? v_kep * (-sin(phi) * dx / ll + cos(phi) * dz / ll)
       : 0.0;
 
-    // D^2.5 beaming — less extreme than D^3, capped at 3.5 to avoid a
-    // blinding hot-spot on the approaching side.
+    // D^2.5 Doppler beaming, capped to avoid blinding hotspot
     float D    = clamp(1.0 / (gamma_ * (1.0 - beta)), 0.1, 3.5);
     float beam = pow(D, 2.5);
 
@@ -121,16 +132,6 @@ export const LENS_FRAG = /* glsl */`
   //   Δ = r² − 2Mr + a²
   //   P = E(r²+a²) − aLz
   //
-  // Hamiltonian H = (1/2Σ)[Δp_r² + p_θ² − P²/Δ + (Lz−aEsin²θ)²/sin²θ] = 0
-  //
-  // Equations of motion:
-  //   dr/dλ   = Δ/Σ · p_r
-  //   dθ/dλ   = p_θ / Σ
-  //   dp_r/dλ = −(r−M)/Σ · p_r² + 2rEP/(ΣΔ) − (r−M)P²/(ΣΔ²)
-  //   dp_θ/dλ = cosθ · (Lz² − a²E²sin⁴θ) / (Σ sin³θ)
-  //
-  // dφ/dλ = [Lz(Δ−a²sin²θ)/(Δsin²θ) + 2aMrE/Δ] / Σ  (cyclic, integrated separately).
-  //
   vec4 geodesicDeriv(vec4 s, float Lz, float E2) {
     float r    = max(s.x, 0.05);
     float th   = s.y;
@@ -150,33 +151,39 @@ export const LENS_FRAG = /* glsl */`
     float rM   = r - u_mass;
 
     return vec4(
-      Dl / Sig * pr,                                          // dr/dλ = Δ/Σ p_r
-      pth / Sig,                                              // dθ/dλ = p_θ/Σ
-      - rM / Sig * pr * pr                                    // dp_r/dλ
+      Dl / Sig * pr,                                           // dr/dλ
+      pth / Sig,                                               // dθ/dλ
+      - rM / Sig * pr * pr                                     // dp_r/dλ
         + 2.0 * r * E * P / (Sig * Dl)
         - rM * P * P / (Sig * Dl * Dl),
-      cosT * (Lz*Lz - a2*E2*sin2*sin2) / (Sig*sinT*sin2)    // dp_θ/dλ
+      cosT * (Lz*Lz - a2*E2*sin2*sin2) / (Sig*sinT*sin2)     // dp_θ/dλ
     );
   }
 
-  // ── Classic RK4 integrator step ──────────────────────────────────────────
-  vec4 rk4Step(vec4 s, float Lz, float E2, float dl) {
-    vec4 k1 = geodesicDeriv(s,               Lz, E2);
-    vec4 k2 = geodesicDeriv(s + 0.5*dl*k1,  Lz, E2);
-    vec4 k3 = geodesicDeriv(s + 0.5*dl*k2,  Lz, E2);
-    vec4 k4 = geodesicDeriv(s +     dl*k3,  Lz, E2);
-    return s + (dl / 6.0) * (k1 + 2.0*k2 + 2.0*k3 + k4);
+  // ── Störmer-Verlet symplectic integrator ─────────────────────────────────
+  // Order-2 symplectic method: preserves the Poincaré invariants better than
+  // RK4 for photons orbiting many times near the photon sphere.
+  //
+  // Scheme (q = positions, p = momenta):
+  //   q_{n+½} = q_n + h/2 · ∂H/∂p(q_n, p_n)
+  //   p_{n+1} = p_n + h   · (−∂H/∂q)(q_{n+½}, p_n)
+  //   q_{n+1} = q_{n+½}  + h/2 · ∂H/∂p(q_{n+½}, p_{n+1})
+  //
+  vec4 svStep(vec4 s, float Lz, float E2, float dl) {
+    // Half step: advance positions (r, θ) using current momenta
+    vec4 d0 = geodesicDeriv(s, Lz, E2);
+    vec4 sq = vec4(s.xy + 0.5 * dl * d0.xy, s.zw);
+
+    // Full step: advance momenta (p_r, p_θ) at half-position
+    vec4 d1 = geodesicDeriv(sq, Lz, E2);
+    vec4 sp = vec4(sq.xy, s.zw + dl * d1.zw);
+
+    // Half step: advance positions with new momenta
+    vec4 d2 = geodesicDeriv(sp, Lz, E2);
+    return vec4(sp.xy + 0.5 * dl * d2.xy, sp.zw);
   }
 
   // ── BL coordinate velocity → world Cartesian direction ──────────────────
-  // Given position (r, θ, φ) and velocity components (vr, vθ, vφ) in BL,
-  // returns the corresponding Cartesian 3-vector.
-  //
-  // Jacobian  ∂(x,y,z)/∂(r,θ,φ):
-  //   dx = sinθ cosφ dr + r cosθ cosφ dθ − r sinθ sinφ dφ
-  //   dy = cosθ dr   − r sinθ dθ
-  //   dz = sinθ sinφ dr + r cosθ sinφ dθ + r sinθ cosφ dφ
-  //
   vec3 blVelToCartesian(
     float r, float th, float phi,
     float vr, float vth, float vphi
@@ -190,10 +197,7 @@ export const LENS_FRAG = /* glsl */`
     );
   }
 
-  // ── Procedural star field ─────────────────────────────────────────────────
-  // Cube-face projection: project dir onto the dominant cube face to get a
-  // uniform 2D grid.  Avoids the equirectangular pole singularity that
-  // produced dark teardrop artefacts at the top/bottom of the shadow.
+  // ── Procedural star field (cube-face projection) ──────────────────────────
   vec3 starField(vec3 dir) {
     vec3  ad = abs(dir);
     float face;
@@ -213,10 +217,9 @@ export const LENS_FRAG = /* glsl */`
     }
 
     const float GRID = 45.0;
-    vec2 guv        = uv * GRID;   // [−45, 45]
+    vec2 guv        = uv * GRID;
     vec2 cell       = floor(guv);
     vec2 fr         = fract(guv);
-    // Offset cell coords by face so each face uses a disjoint region of hash space
     vec2 faceOffset = vec2(face * 113.0, face * 97.0);
 
     vec3 col = vec3(0.0);
@@ -226,39 +229,37 @@ export const LENS_FRAG = /* glsl */`
       float h1      = fract(sin(dot(nc, vec2(127.1, 311.7))) * 43758.5453);
       float h2      = fract(sin(dot(nc, vec2(269.5, 183.3))) * 43758.5453);
       float h3      = fract(sin(dot(nc, vec2(419.2, 371.9))) * 43758.5453);
-      float hasStar = step(h1, 0.05);   // ~5 % of cells contain a star
+      float hasStar = step(h1, 0.05);
       vec2  sp      = vec2(h2, h3);
       float dist    = length(fr - sp - vec2(float(ix), float(iy)));
       float brightness = exp(-dist * dist * 60.0)
                        * (0.4 + h1 * 12.0)
                        * hasStar;
-      vec3  sc = h1 < 0.015 ? vec3(0.75, 0.88, 1.00)  // blue-white
-               : h1 < 0.030 ? vec3(1.00, 0.80, 0.55)  // warm orange
-               :               vec3(1.00, 1.00, 1.00);  // white
+      vec3  sc = h1 < 0.015 ? vec3(0.75, 0.88, 1.00)
+               : h1 < 0.030 ? vec3(1.00, 0.80, 0.55)
+               :               vec3(1.00, 1.00, 1.00);
       col += sc * brightness;
     }
     }
     return clamp(col, 0.0, 3.0);
   }
 
-  // ── Project a world-space direction to UV screen coordinates ────────────
-  vec2 dirToUV(vec3 d) {
-    float aspect = u_resolution.x / u_resolution.y;
-    // Clamp dotF to 0.01 rather than branching on dotF ≤ 0.  The old branch
-    // returned vUv for backward-facing rays, creating a visible seam/ring at
-    // the dotF = 0 boundary (near the shadow edge for strongly deflected rays).
-    float dotF = max(dot(d, u_cam_forward), 0.01);
-    float pR = dot(d, u_cam_right)  / dotF;
-    float pU = dot(d, u_cam_up_vec) / dotF;
-    return clamp(vec2(pR / (u_fov_tan * aspect), pU / u_fov_tan) * 0.5 + 0.5, 0.001, 0.999);
-  }
-
   // ─────────────────────────────────────────────────────────────────────────
   void main() {
-    // ── Reconstruct ray direction from this pixel's UV ─────────────────────
     float aspect = u_resolution.x / u_resolution.y;
-    vec2  ndc    = vUv * 2.0 - 1.0;
-    vec3  ray    = normalize(
+
+    // ── Halton jitter for temporal anti-aliasing ───────────────────────────
+    // Cycles through 16 low-discrepancy sub-pixel offsets each frame.
+    // Shifts the photon-ring sample positions by up to ±0.5 px, distributing
+    // discrete crossing samples across the ring width over time.
+    float fn  = mod(u_frame, 16.0) + 1.0;
+    float jx  = halton(fn, 2.0) - 0.5;   // (-0.5, 0.5) pixels
+    float jy  = halton(fn, 3.0) - 0.5;
+
+    vec2  ndc = vUv * 2.0 - 1.0
+              + vec2(jx / u_resolution.x, jy / u_resolution.y) * 2.0;
+
+    vec3 ray = normalize(
       u_cam_forward
       + ndc.x * u_fov_tan * aspect * u_cam_right
       + ndc.y * u_fov_tan * u_cam_up_vec
@@ -271,29 +272,14 @@ export const LENS_FRAG = /* glsl */`
     float sinT0 = sin(th0), cosT0 = cos(th0);
     float sinP0 = sin(phi0), cosP0 = cos(phi0);
     float a0    = u_spin * u_mass;
-    float Sig0  = r0*r0 + a0*a0*cosT0*cosT0;   // Σ at observer
-    float Dl0   = r0*r0 - 2.0*u_mass*r0 + a0*a0; // Δ at observer
-    // E₀² = (Σ₀ − 2Mr₀)/Σ₀: conserved BL energy squared from the Kerr static
-    // tetrad (p^(t̂) = 1).  Reduces to 1−2M/r₀ for Schwarzschild.
+    float Sig0  = r0*r0 + a0*a0*cosT0*cosT0;
+    float Dl0   = r0*r0 - 2.0*u_mass*r0 + a0*a0;
     float E2    = max((Sig0 - 2.0*u_mass*r0) / Sig0, 1e-6);
+    float E     = sqrt(E2);
 
-    // Escape radius scales with mass and outer disk edge so rays always reach
-    // the background even for high-mass black holes.
     float escapeR = max(50.0, u_r_outer * u_mass * 3.0);
 
-    // ── Decompose ray direction into local tetrad components ───────────────
-    //
-    // At static observer in Schwarzschild, the orthonormal tetrad coframe:
-    //   ê_r̂ = (sinθ cosφ, cosθ, sinθ sinφ)   unit radial in Cartesian
-    //   ê_θ̂ = (cosθ cosφ, −sinθ, cosθ sinφ)  unit polar  in Cartesian
-    //   ê_φ̂ = (−sinφ,     0,     cosφ)        unit azimuthal in Cartesian
-    //
-    // Tetrad → BL momenta (E_BL = √f₀):
-    //   p_r   = n_r̂ / √f₀
-    //   p_θ   = n_θ̂ · r₀
-    //   Lz    = n_φ̂ · r₀ sinθ₀
-    //
-
+    // ── Decompose ray into BL momenta via Kerr tetrad ─────────────────────
     vec3 e_r   = vec3(sinT0*cosP0,  cosT0,  sinT0*sinP0);
     vec3 e_th  = vec3(cosT0*cosP0, -sinT0,  cosT0*sinP0);
     vec3 e_phi = vec3(-sinP0,       0.0,    cosP0);
@@ -302,8 +288,6 @@ export const LENS_FRAG = /* glsl */`
     float n_th  = dot(ray, e_th);
     float n_phi = dot(ray, e_phi);
 
-    // Lz uses the Schwarzschild approximation (error O(a/r), acceptable for
-    // moderate spin).  p_r and p_θ use the Kerr tetrad factors √(Σ₀/Δ₀) and √Σ₀.
     float Lz = n_phi * r0 * sinT0;
     vec4  s  = vec4(r0, th0,
                     n_r  * sqrt(max(Sig0 / max(Dl0, 1e-6), 0.0)),
@@ -311,58 +295,76 @@ export const LENS_FRAG = /* glsl */`
     float phi = phi0;
 
     // ── Main geodesic loop ─────────────────────────────────────────────────
-    // Volumetric disk: accumulate emission from a Gaussian vertical density
-    // profile at every step.  Kerr frame-dragging breaks axial symmetry and
-    // physically eliminates the polar teardrop caustic.
+    // Plane-crossing disk: accumulate disk emission only at exact θ=π/2
+    // crossings.  This prevents near-polar orbiting photons from building up
+    // many Gaussian contributions that create the teardrop/chain-of-dots
+    // artifact near the photon ring.
     vec3  diskAccum = vec3(0.0);
     float diskAlpha = 0.0;
-    float E         = sqrt(max(E2, 1e-6));  // conserved BL energy (constant)
+    int   crossings = 0;
+
+    vec4  prevS   = s;
+    float prevPhi = phi;
 
     for (int i = 0; i < N_STEPS; i++) {
 
-      // ── Adaptive step size: smaller near the horizon ───────────────────
+      // ── Adaptive step size ──────────────────────────────────────────────
       float dl = 0.5 * max(s.x / max(5.0 * u_mass, 1.0), 0.05);
 
-      // ── Volumetric accretion disk ──────────────────────────────────────
-      float rEq  = s.x * abs(sin(s.y));
-      float zBL  = s.x * cos(s.y);
-      float sig  = max(0.08 * rEq, 0.05 * u_mass);
-      float dens = exp(-0.5 * (zBL / sig) * (zBL / sig));
-      if (dens > 0.01 && rEq > u_r_inner * u_mass && rEq < u_r_outer * u_mass) {
-        float trs  = 1.0 - diskAlpha;
-        float wt   = dens * dl;
-        diskAccum += diskColor(rEq, phi) * wt * trs;
-        diskAlpha  = min(diskAlpha + wt * trs * 0.5, 0.99);
-        if (diskAlpha > 0.98) break;
-      }
+      // ── Save state before advancing (for crossing interpolation) ────────
+      prevS   = s;
+      prevPhi = phi;
 
-      // ── Advance φ (Kerr: frame-dragging adds 2aMrE/Δ term) ────────────
+      // ── Advance φ (Kerr: frame-dragging term 2aMrE/Δ) ──────────────────
       float a_ph    = u_spin * u_mass;
       float a2_ph   = a_ph * a_ph;
       float r2_ph   = s.x * s.x;
       float sinT_ph = max(abs(sin(s.y)), 1e-4);
       float sin2_ph = sinT_ph * sinT_ph;
-      float Sig_ph  = r2_ph + a2_ph * (1.0 - sin2_ph);   // r²+a²cos²θ
+      float Sig_ph  = r2_ph + a2_ph * (1.0 - sin2_ph);
       float Dl_ph   = max(r2_ph - 2.0*u_mass*s.x + a2_ph, 1e-6);
-      // dφ/dλ = [Lz(Δ−a²sin²θ)/(Δsin²θ) + 2aMrE/Δ] / Σ
       phi += (Lz*(Dl_ph - a2_ph*sin2_ph)/(Dl_ph*sin2_ph)
               + 2.0*a_ph*u_mass*s.x*E/Dl_ph) / Sig_ph * dl;
 
-      // ── RK4 step for (r, θ, p_r, p_θ) ────────────────────────────────
-      s = rk4Step(s, Lz, E2, dl);
+      // ── Störmer-Verlet step for (r, θ, p_r, p_θ) ───────────────────────
+      s = svStep(s, Lz, E2, dl);
+
+      // ── Equatorial plane crossing detection ─────────────────────────────
+      // Detect sign change of (θ − π/2) between prevS and s.  Interpolate
+      // linearly to find the exact crossing position and φ, then sample the
+      // disk once.  Limited to MAX_CROSS crossings to cap higher-order ring
+      // images without discarding the direct + first-lensed images.
+      if (crossings < MAX_CROSS) {
+        float dPrev = prevS.y - PI_2;
+        float dCurr = s.y    - PI_2;
+        if (dPrev * dCurr <= 0.0) {
+          float denom = dCurr - dPrev;
+          float t     = abs(denom) > 1e-8 ? clamp(-dPrev / denom, 0.0, 1.0) : 0.5;
+          float rCross   = mix(prevS.x, s.x, t);
+          float phiCross = prevPhi + t * (phi - prevPhi);
+
+          vec3  col    = diskColor(rCross, phiCross);
+          float weight = max(0.0, 1.0 - diskAlpha);
+          diskAccum   += col * weight;
+          // Increase alpha proportional to brightness so bright inner disk
+          // saturates quickly and outer-disk lower crossings are still visible
+          float bright = length(col);
+          if (bright > 1e-4) {
+            diskAlpha = min(diskAlpha + weight * min(bright * 3.0, 0.95), 0.99);
+          }
+          crossings++;
+        }
+      }
 
       // ── Horizon — absorb the ray ─────────────────────────────────────────
-      // Kerr outer horizon r₊ = M + √(M²−a²).
       float rPlus = u_mass + sqrt(max(u_mass*u_mass*(1.0 - u_spin*u_spin), 0.0));
       if (s.x < rPlus + 0.1) {
-        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        gl_FragColor = vec4(diskAccum, 1.0);
         return;
       }
 
       // ── Escape — sample the warped background ──────────────────────────
       if (s.x > escapeR) {
-        // Kerr velocity: dr/dλ = Δ/Σ p_r,  dθ/dλ = p_θ/Σ,
-        // dφ/dλ = [Lz(Δ-a²sin²θ)/(Δsin²θ) + 2aMrE/Δ] / Σ
         float a_e    = u_spin * u_mass;
         float a2_e   = a_e * a_e;
         float r2_e   = s.x * s.x;
@@ -370,7 +372,7 @@ export const LENS_FRAG = /* glsl */`
         float sin2_e = sinTE * sinTE;
         float Sig_e  = r2_e + a2_e * (1.0 - sin2_e);
         float Dl_e   = max(r2_e - 2.0*u_mass*s.x + a2_e, 1e-6);
-        vec3 escDir = normalize(blVelToCartesian(
+        vec3 escDir  = normalize(blVelToCartesian(
           s.x, s.y, phi,
           Dl_e / Sig_e * s.z,
           s.w / Sig_e,
@@ -413,11 +415,6 @@ export type LensingUniforms = Record<string, { value: unknown }>;
 
 /**
  * Build the initial uniforms object for the lensing ShaderPass.
- *
- * @param data       Observer / BH state
- * @param rInnerM    Inner disk edge in M  (default 2.1)
- * @param rOuterM    Outer disk edge in M  (default 25.0)
- * @param rHorizonM  Event horizon radius in M  (default 2.0 for Schwarzschild)
  */
 export function createLensingUniforms(
   data:       LensingUniformData,
@@ -438,8 +435,9 @@ export function createLensingUniforms(
     u_cam_right:   { value: data.cam_right },
     u_cam_up_vec:  { value: data.cam_up_vec },
     u_cam_forward: { value: data.cam_forward },
-    u_fov_tan:     { value: 1.0 },  // tan(45°) for 90° FOV
+    u_fov_tan:     { value: 1.0 },
     u_spin:        { value: data.spin },
+    u_frame:       { value: 0.0 },
   };
 }
 
@@ -453,7 +451,6 @@ export function updateLensingUniforms(
 ): void {
   uniforms.u_mass.value        = data.mass;
   uniforms.u_spin.value        = data.spin;
-  // Kerr horizon r₊ = M + √(M²−a²)
   const a = data.spin * data.mass;
   uniforms.u_r_horizon.value   = data.mass + Math.sqrt(Math.max(data.mass * data.mass - a * a, 0));
   uniforms.u_cam_r.value       = data.cam_r;
@@ -465,18 +462,6 @@ export function updateLensingUniforms(
   uniforms.u_resolution.value  = data.resolution;
 }
 
-/**
- * Shader definition object for constructing a Three.js ShaderPass.
- * Build the pass in the component to avoid importing three/examples/jsm here.
- *
- * Usage:
- *   import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
- *   const pass = new ShaderPass({
- *     uniforms:       createLensingUniforms(initialData),
- *     vertexShader:   LENS_VERT,
- *     fragmentShader: LENS_FRAG,
- *   });
- */
 export const LENSING_SHADER = {
   vertexShader:   LENS_VERT,
   fragmentShader: LENS_FRAG,
