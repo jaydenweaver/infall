@@ -9,9 +9,7 @@ import type { SimControls } from '@/hooks/useSim';
 import {
   blToCartesian,
   cameraUp,
-  randomStarPositions,
   WORLD_SCALE,
-  STAR_SPHERE_RADIUS,
 } from '@/lib/coordinates';
 import {
   LENS_VERT,
@@ -21,9 +19,16 @@ import {
   type LensingUniforms,
 } from '@/shaders/lensing';
 
-const STAR_COUNT    = 8_000;
-const DISK_INNER_M  = 2.1;
-const DISK_OUTER_M  = 25.0;
+// Inner edge = Schwarzschild ISCO = 6M.  Extending inside ISCO put extremely
+// hot, over-bright material near the photon sphere, creating garish stripes.
+// Outer edge trimmed to 15M — dim outer disk contributed faint extra rings.
+const DISK_INNER_M  = 6.0;
+const DISK_OUTER_M  = 15.0;
+// Elevation above the equatorial plane (radians).
+// A purely equatorial camera sees an infinitely-thin disk edge-on — direct
+// disk rays never cross the midplane and are invisible to the shader's
+// plane-crossing detector.  A small tilt brings direct disk rays into view.
+const CAM_THETA_ELEVATION = 0.2;
 
 interface Props {
   sim: SimControls;
@@ -53,31 +58,15 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
       90,
       mount.clientWidth / mount.clientHeight,
       0.1,
-      STAR_SPHERE_RADIUS * 2,
+      1e6,
     );
-    camera.position.set(0, 0, 8 * WORLD_SCALE);
+    const [icx, icy, icz] = blToCartesian(8, Math.PI / 2 - CAM_THETA_ELEVATION, Math.PI / 2);
+    camera.position.set(icx, icy, icz);
+    const [iux, iuy, iuz] = cameraUp(Math.PI / 2 - CAM_THETA_ELEVATION, Math.PI / 2);
+    camera.up.set(iux, iuy, iuz);
     camera.lookAt(0, 0, 0);
 
-    // ── Stars (renderOrder 0) ─────────────────────────────────────────────────
-    const starPos = randomStarPositions(STAR_COUNT, STAR_SPHERE_RADIUS);
-    const starCol = new Float32Array(STAR_COUNT * 3);
-    for (let i = 0; i < STAR_COUNT; i++) {
-      const roll = Math.random();
-      if (roll < 0.15) {
-        starCol[i*3]=0.75; starCol[i*3+1]=0.88; starCol[i*3+2]=1.0;  // blue-white
-      } else if (roll < 0.30) {
-        starCol[i*3]=1.0;  starCol[i*3+1]=0.80; starCol[i*3+2]=0.55; // warm orange
-      } else {
-        starCol[i*3]=1.0;  starCol[i*3+1]=1.0;  starCol[i*3+2]=1.0;  // white
-      }
-    }
-    const starGeom = new THREE.BufferGeometry();
-    starGeom.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
-    starGeom.setAttribute('color',    new THREE.BufferAttribute(starCol, 3));
-    scene.add(new THREE.Points(
-      starGeom,
-      new THREE.PointsMaterial({ vertexColors: true, size: 2500, sizeAttenuation: true }),
-    ));
+    // Stars are drawn procedurally by the lensing shader's starField() function.
 
     // ── Black hole shadow sphere ───────────────────────────────────────────────
     // The lensing pass already traces geodesics and produces the correct photon
@@ -97,19 +86,28 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
     // IMPORTANT: ShaderPass clones the uniforms object internally via
     // THREE.UniformsUtils.clone().  All per-frame updates must target
     // lensingPass.uniforms (the clone), not the object passed to the constructor.
-    const initialR = camera.position.length() / WORLD_SCALE; // 8 M
-    // Camera starts at (0, 0, 8·WS) = BL φ = π/2 (z-axis), so cam_phi = π/2.
-    const initialFwd: [number, number, number] = [0, 0, -1];  // looking at origin
-    const initialRight: [number, number, number] = [1, 0, 0];
-    const initialUp: [number, number, number]   = [0, 1, 0];
+    const initialR = 8.0; // M
+    // Camera starts elevated CAM_THETA_ELEVATION radians above the equatorial
+    // plane.  A purely equatorial camera sees the disk edge-on and the primary
+    // disk image is invisible to the plane-crossing detector.
+    const initialTheta = Math.PI / 2 - CAM_THETA_ELEVATION;
+    const initialPhi   = Math.PI / 2; // camera on +Z axis → φ = π/2
+    // Derive initial basis from the camera we already positioned above.
+    camera.updateMatrixWorld();
+    const initFwdV  = camera.position.clone().negate().normalize();
+    const initUpV   = camera.up.clone().normalize();
+    const initRightV = new THREE.Vector3().crossVectors(initFwdV, initUpV).normalize();
+    const initialFwd:   [number, number, number] = [initFwdV.x,   initFwdV.y,   initFwdV.z];
+    const initialRight: [number, number, number] = [initRightV.x, initRightV.y, initRightV.z];
+    const initialUp:    [number, number, number] = [initUpV.x,    initUpV.y,    initUpV.z];
 
     const lensingPass = new ShaderPass({
       uniforms: createLensingUniforms(
         {
           mass:        1.0,
           cam_r:       initialR,
-          cam_theta:   Math.PI / 2,
-          cam_phi:     Math.PI / 2,  // camera is on the +Z axis → φ = π/2
+          cam_theta:   initialTheta,
+          cam_phi:     initialPhi,
           cam_right:   initialRight,
           cam_up_vec:  initialUp,
           cam_forward: initialFwd,
@@ -152,10 +150,12 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
 
         const frame = sim.step();
         if (frame && sim.stateRef.current) {
-          // Camera follows the observer's geodesic
-          const [cx, cy, cz] = blToCartesian(frame.r, frame.theta, frame.phi);
+          // Camera follows the observer's geodesic, elevated above the disk plane
+          // so the lensing shader's plane-crossing detector sees the primary disk image.
+          const renderTheta = frame.theta - CAM_THETA_ELEVATION;
+          const [cx, cy, cz] = blToCartesian(frame.r, renderTheta, frame.phi);
           camera.position.set(cx, cy, cz);
-          const [ux, uy, uz] = cameraUp(frame.theta, frame.phi);
+          const [ux, uy, uz] = cameraUp(renderTheta, frame.phi);
           camera.up.set(ux, uy, uz);
           camera.lookAt(0, 0, 0);
           camera.updateMatrixWorld();
@@ -170,7 +170,7 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
           updateLensingUniforms(lensUniforms, {
             mass:        sim.stateRef.current.mass,
             cam_r:       frame.r,
-            cam_theta:   frame.theta,
+            cam_theta:   renderTheta,
             cam_phi:     frame.phi,
             cam_right:   [camRight.x, camRight.y, camRight.z],
             cam_up_vec:  [camera.up.x, camera.up.y, camera.up.z],
