@@ -296,16 +296,19 @@ export const LENS_FRAG = /* glsl */`
     float n_phi = dot(ray, e_phi);
 
     float Lz = n_phi * r0 * sinT0;
+    // Teardrop-caustic fade: the mirror-symmetric teardrops at the top/bottom
+    // of the shadow come from near-polar rays (|Lz| ≈ 0) that bounce above the
+    // disk and re-cross it.  Fading disk emission smoothly to zero for small
+    // |Lz| eliminates them without any per-step tracking or screen-space boundary.
+    float lzFade = smoothstep(0.0, 1.5 * u_mass, abs(Lz));
     vec4  s  = vec4(r0, th0, n_r / sqrt(f0), n_th * r0);
     float phi = phi0;
 
     // ── Main geodesic loop ─────────────────────────────────────────────────
-    // Volumetric disk: instead of detecting discrete equatorial-plane
-    // crossings, accumulate emission from a Gaussian vertical density profile
-    // at every integration step.  This eliminates all teardrop / caustic
-    // artefacts that arise from thin-plane detection of near-polar bounce paths.
+    // Volumetric disk: accumulate emission from a Gaussian vertical density
+    // profile at every step.  lzFade (above) suppresses near-polar teardrops.
     vec3  diskAccum = vec3(0.0);
-    float diskAlpha = 0.0;   // front-to-back opacity accumulator
+    float diskAlpha = 0.0;
 
     for (int i = 0; i < N_STEPS; i++) {
 
@@ -313,14 +316,9 @@ export const LENS_FRAG = /* glsl */`
       float dl = 0.5 * max(s.x / max(5.0 * u_mass, 1.0), 0.05);
 
       // ── Volumetric accretion disk ──────────────────────────────────────
-      // Sample a Gaussian vertical profile ρ ∝ exp(−z²/2σ²) at the current
-      // position and accumulate emission weighted by density × path-length.
-      // Using diskColor() purely as an emission coefficient; opacity is
-      // tracked separately with a 0.5× scale so the disk is semi-transparent
-      // (≈40–60 % opaque per vertical crossing rather than fully saturated).
-      float rEq  = s.x * abs(sin(s.y));            // equatorial radius
-      float zBL  = s.x * cos(s.y);                 // height above midplane
-      float sig  = max(0.08 * rEq, 0.05 * u_mass); // scale height, H/R = 8 %
+      float rEq  = s.x * abs(sin(s.y));
+      float zBL  = s.x * cos(s.y);
+      float sig  = max(0.08 * rEq, 0.05 * u_mass);
       float dens = exp(-0.5 * (zBL / sig) * (zBL / sig));
       if (dens > 0.01 && rEq > u_r_inner * u_mass && rEq < u_r_outer * u_mass) {
         float trs  = 1.0 - diskAlpha;
@@ -330,9 +328,10 @@ export const LENS_FRAG = /* glsl */`
         if (diskAlpha > 0.98) break;
       }
 
-      // ── Advance φ with Euler using current-step values ─────────────────
-      float sinT2 = max(sin(s.y) * sin(s.y), 1e-8);
-      phi += Lz / (s.x * s.x * sinT2) * dl;
+      // ── Advance φ ─────────────────────────────────────────────────────
+      float sinT2    = max(sin(s.y) * sin(s.y), 1e-8);
+      float dphiStep = Lz / (s.x * s.x * sinT2) * dl;
+      phi       += dphiStep;
 
       // ── RK4 step for (r, θ, p_r, p_θ) ────────────────────────────────
       s = rk4Step(s, Lz, E2, dl);
@@ -361,7 +360,7 @@ export const LENS_FRAG = /* glsl */`
           dphi                  // dφ/dλ  = Lz / (r² sin²θ)
         ));
         vec3 bg = starField(escDir);
-        gl_FragColor = vec4(bg + diskAccum, 1.0);
+        gl_FragColor = vec4(bg + diskAccum * lzFade, 1.0);
         return;
       }
     }
@@ -369,7 +368,7 @@ export const LENS_FRAG = /* glsl */`
     // Max iterations: ray trapped near photon sphere.
     // Output only accumulated disk light — no artificial glow, which was
     // creating a visible brownish ring artefact along the vertical axis.
-    gl_FragColor = vec4(diskAccum, 1.0);
+    gl_FragColor = vec4(diskAccum * lzFade, 1.0);
   }
 `;
 
