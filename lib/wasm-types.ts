@@ -69,9 +69,12 @@ export interface BlackHoleParams {
   mass: number;
   /** Spin parameter a ∈ [0, mass). */
   spin: number;
+  /** Initial observer distance in multiples of M (BL r / mass). NaN → ISCO. */
+  initialR: number;
 }
 
 export const DEFAULT_PARAMS: BlackHoleParams = {
   mass: 1.0,
   spin: 0.0,
+  initialR: 8,
 };

@@ -29,6 +29,22 @@ export default function Controls({
 
   return (
     <div className="absolute bottom-4 right-4 flex flex-col gap-3 w-52 text-xs text-gray-300">
+      {/* Camera distance */}
+      <label className="flex flex-col gap-1">
+        <span className="text-gray-500">
+          Distance <span className="text-white font-bold">{params.initialR.toFixed(0)} M</span>
+        </span>
+        <input
+          type="range"
+          min={6}
+          max={50}
+          step={1}
+          value={params.initialR}
+          onChange={(e) => onParamsChange({ ...params, initialR: Number(e.target.value) })}
+          className="accent-orange-500"
+        />
+      </label>
+
       {/* Spin */}
       <label className="flex flex-col gap-1">
         <span className="text-gray-500">

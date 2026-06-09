@@ -45,7 +45,8 @@ export function useSim(api: WasmApi | null, params: BlackHoleParams): SimControl
   // (Re-)initialise whenever the API becomes available or params change
   useEffect(() => {
     if (!api) return;
-    const initial = api.wasm_init(params.mass, params.spin, NaN);
+    const r0 = isNaN(params.initialR) ? NaN : params.initialR * params.mass;
+    const initial = api.wasm_init(params.mass, params.spin, r0);
     stateRef.current = initial;
     frameRef.current = null;
     frameCountRef.current = 0;
@@ -55,7 +56,7 @@ export function useSim(api: WasmApi | null, params: BlackHoleParams): SimControl
       insideHorizon: false,
       terminated: false,
     });
-  }, [api, params.mass, params.spin]);
+  }, [api, params.mass, params.spin, params.initialR]);
 
   const step = useCallback((): FrameData | null => {
     if (!api || !stateRef.current || stateRef.current.terminated) return null;
@@ -85,7 +86,9 @@ export function useSim(api: WasmApi | null, params: BlackHoleParams): SimControl
       if (!api) return;
       const mass = overrides?.mass ?? params.mass;
       const spin = overrides?.spin ?? params.spin;
-      const initial = api.wasm_init(mass, spin, NaN);
+      const iR   = overrides?.initialR ?? params.initialR;
+      const r0   = isNaN(iR) ? NaN : iR * mass;
+      const initial = api.wasm_init(mass, spin, r0);
       stateRef.current = initial;
       frameRef.current = null;
       frameCountRef.current = 0;
@@ -96,7 +99,7 @@ export function useSim(api: WasmApi | null, params: BlackHoleParams): SimControl
         terminated: false,
       });
     },
-    [api, params.mass, params.spin]
+    [api, params.mass, params.spin, params.initialR]
   );
 
   return { step, reset, stateRef, frameRef, hudSnapshot };
