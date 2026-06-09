@@ -49,6 +49,7 @@ export const LENS_FRAG = /* glsl */`
   uniform vec3  u_cam_up_vec;
   uniform vec3  u_cam_forward;
   uniform float u_fov_tan;  // tan(fov / 2);  = 1.0 for 90° FOV
+  uniform float u_spin;     // dimensionless spin  a/M  ∈ [0, 1)
 
   varying vec2 vUv;
 
@@ -110,46 +111,51 @@ export const LENS_FRAG = /* glsl */`
     return col * beam * temp * fade * 0.50;
   }
 
-  // ── Schwarzschild null geodesic — Hamilton's equations ───────────────────
+  // ── Kerr null geodesic — Boyer-Lindquist Hamilton's equations ───────────
   //
-  // State s = (r, θ, p_r, p_θ),  conserved angular momentum Lz.
+  // State s = (r, θ, p_r, p_θ),  conserved E = √E₂ and angular momentum Lz.
+  // Spin parameter a = u_spin · M  (a = 0 → Schwarzschild exactly).
   //
-  // The local tetrad sets p^(t̂) = 1 at the observer, giving conserved
-  // BL energy E_BL = √f₀  (where f₀ = f(r_observer)).  We carry E₀² = f₀
-  // as a constant so the Hamiltonian H = 0 is satisfied exactly.
+  // Metric quantities:
+  //   Σ = r² + a²cos²θ
+  //   Δ = r² − 2Mr + a²
+  //   P = E(r²+a²) − aLz
   //
-  // Hamiltonian:
-  //   H = ½[ −E₀²/f + f·p_r² + p_θ²/r² + Lz²/(r²sin²θ) ] = 0
+  // Hamiltonian H = (1/2Σ)[Δp_r² + p_θ² − P²/Δ + (Lz−aEsin²θ)²/sin²θ] = 0
   //
-  // Equations of motion  (E₀² multiplies only the first dp_r term):
-  //   dr/dλ   = f · p_r
-  //   dθ/dλ   = p_θ / r²
-  //   dp_r/dλ = −E₀²·M/(r²f²) − M·p_r²/r² + p_θ²/r³ + Lz²/(r³sin²θ)
-  //   dp_θ/dλ = Lz²·cosθ / (r²sin³θ)
+  // Equations of motion:
+  //   dr/dλ   = Δ/Σ · p_r
+  //   dθ/dλ   = p_θ / Σ
+  //   dp_r/dλ = −(r−M)/Σ · p_r² + 2rEP/(ΣΔ) − (r−M)P²/(ΣΔ²)
+  //   dp_θ/dλ = cosθ · (Lz² − a²E²sin⁴θ) / (Σ sin³θ)
   //
-  // dφ/dλ = Lz / (r²sin²θ)  is integrated separately (φ is cyclic).
+  // dφ/dλ = [Lz(Δ−a²sin²θ)/(Δsin²θ) + 2aMrE/Δ] / Σ  (cyclic, integrated separately).
   //
   vec4 geodesicDeriv(vec4 s, float Lz, float E2) {
-    float r    = max(s.x, 0.1);
+    float r    = max(s.x, 0.05);
     float th   = s.y;
     float pr   = s.z;
     float pth  = s.w;
-
-    float f    = max(1.0 - 2.0 * u_mass / r, 1e-6);
+    float a    = u_spin * u_mass;
+    float a2   = a * a;
     float r2   = r * r;
-    float r3   = r2 * r;
-    float sinT = max(abs(sin(th)), 1e-4);
     float cosT = cos(th);
+    float sinT = max(abs(sin(th)), 1e-4);
     float sin2 = sinT * sinT;
+    float cos2 = cosT * cosT;
+    float Sig  = r2 + a2 * cos2;
+    float Dl   = max(r2 - 2.0 * u_mass * r + a2, 1e-6);
+    float E    = sqrt(max(E2, 1e-6));
+    float P    = E * (r2 + a2) - a * Lz;
+    float rM   = r - u_mass;
 
     return vec4(
-      f * pr,                                            // dr/dλ
-      pth / r2,                                          // dθ/dλ
-      -E2 * u_mass / (r2 * f * f)                        // dp_r/dλ  ← E₀² factor
-        - u_mass * pr * pr / r2
-        + pth * pth / r3
-        + Lz * Lz / (r3 * sin2),
-      Lz * Lz * cosT / (r2 * sin2 * sinT)               // dp_θ/dλ
+      Dl / Sig * pr,                                          // dr/dλ = Δ/Σ p_r
+      pth / Sig,                                              // dθ/dλ = p_θ/Σ
+      - rM / Sig * pr * pr                                    // dp_r/dλ
+        + 2.0 * r * E * P / (Sig * Dl)
+        - rM * P * P / (Sig * Dl * Dl),
+      cosT * (Lz*Lz - a2*E2*sin2*sin2) / (Sig*sinT*sin2)    // dp_θ/dλ
     );
   }
 
@@ -262,11 +268,14 @@ export const LENS_FRAG = /* glsl */`
     float r0    = u_cam_r;
     float th0   = u_cam_theta;
     float phi0  = u_cam_phi;
-    float f0    = max(1.0 - 2.0 * u_mass / r0, 1e-4);
-    // E₀² = f(r_observer): conserved BL energy squared for a photon whose
-    // local-frame energy p^(t̂) = 1.  Must be carried through the integration
-    // so that H = 0 is satisfied (null geodesic, not massive-particle).
-    float E2    = f0;
+    float sinT0 = sin(th0), cosT0 = cos(th0);
+    float sinP0 = sin(phi0), cosP0 = cos(phi0);
+    float a0    = u_spin * u_mass;
+    float Sig0  = r0*r0 + a0*a0*cosT0*cosT0;   // Σ at observer
+    float Dl0   = r0*r0 - 2.0*u_mass*r0 + a0*a0; // Δ at observer
+    // E₀² = (Σ₀ − 2Mr₀)/Σ₀: conserved BL energy squared from the Kerr static
+    // tetrad (p^(t̂) = 1).  Reduces to 1−2M/r₀ for Schwarzschild.
+    float E2    = max((Sig0 - 2.0*u_mass*r0) / Sig0, 1e-6);
 
     // Escape radius scales with mass and outer disk edge so rays always reach
     // the background even for high-mass black holes.
@@ -284,8 +293,6 @@ export const LENS_FRAG = /* glsl */`
     //   p_θ   = n_θ̂ · r₀
     //   Lz    = n_φ̂ · r₀ sinθ₀
     //
-    float sinT0 = sin(th0), cosT0 = cos(th0);
-    float sinP0 = sin(phi0), cosP0 = cos(phi0);
 
     vec3 e_r   = vec3(sinT0*cosP0,  cosT0,  sinT0*sinP0);
     vec3 e_th  = vec3(cosT0*cosP0, -sinT0,  cosT0*sinP0);
@@ -295,20 +302,21 @@ export const LENS_FRAG = /* glsl */`
     float n_th  = dot(ray, e_th);
     float n_phi = dot(ray, e_phi);
 
+    // Lz uses the Schwarzschild approximation (error O(a/r), acceptable for
+    // moderate spin).  p_r and p_θ use the Kerr tetrad factors √(Σ₀/Δ₀) and √Σ₀.
     float Lz = n_phi * r0 * sinT0;
-    // Teardrop-caustic fade: the mirror-symmetric teardrops at the top/bottom
-    // of the shadow come from near-polar rays (|Lz| ≈ 0) that bounce above the
-    // disk and re-cross it.  Fading disk emission smoothly to zero for small
-    // |Lz| eliminates them without any per-step tracking or screen-space boundary.
-    float lzFade = smoothstep(0.0, 1.5 * u_mass, abs(Lz));
-    vec4  s  = vec4(r0, th0, n_r / sqrt(f0), n_th * r0);
+    vec4  s  = vec4(r0, th0,
+                    n_r  * sqrt(max(Sig0 / max(Dl0, 1e-6), 0.0)),
+                    n_th * sqrt(Sig0));
     float phi = phi0;
 
     // ── Main geodesic loop ─────────────────────────────────────────────────
     // Volumetric disk: accumulate emission from a Gaussian vertical density
-    // profile at every step.  lzFade (above) suppresses near-polar teardrops.
+    // profile at every step.  Kerr frame-dragging breaks axial symmetry and
+    // physically eliminates the polar teardrop caustic.
     vec3  diskAccum = vec3(0.0);
     float diskAlpha = 0.0;
+    float E         = sqrt(max(E2, 1e-6));  // conserved BL energy (constant)
 
     for (int i = 0; i < N_STEPS; i++) {
 
@@ -328,47 +336,53 @@ export const LENS_FRAG = /* glsl */`
         if (diskAlpha > 0.98) break;
       }
 
-      // ── Advance φ ─────────────────────────────────────────────────────
-      float sinT2    = max(sin(s.y) * sin(s.y), 1e-8);
-      float dphiStep = Lz / (s.x * s.x * sinT2) * dl;
-      phi       += dphiStep;
+      // ── Advance φ (Kerr: frame-dragging adds 2aMrE/Δ term) ────────────
+      float a_ph    = u_spin * u_mass;
+      float a2_ph   = a_ph * a_ph;
+      float r2_ph   = s.x * s.x;
+      float sinT_ph = max(abs(sin(s.y)), 1e-4);
+      float sin2_ph = sinT_ph * sinT_ph;
+      float Sig_ph  = r2_ph + a2_ph * (1.0 - sin2_ph);   // r²+a²cos²θ
+      float Dl_ph   = max(r2_ph - 2.0*u_mass*s.x + a2_ph, 1e-6);
+      // dφ/dλ = [Lz(Δ−a²sin²θ)/(Δsin²θ) + 2aMrE/Δ] / Σ
+      phi += (Lz*(Dl_ph - a2_ph*sin2_ph)/(Dl_ph*sin2_ph)
+              + 2.0*a_ph*u_mass*s.x*E/Dl_ph) / Sig_ph * dl;
 
       // ── RK4 step for (r, θ, p_r, p_θ) ────────────────────────────────
       s = rk4Step(s, Lz, E2, dl);
 
       // ── Horizon — absorb the ray ─────────────────────────────────────────
-      // Schwarzschild horizon = 2M; use u_mass directly so this scales with
-      // any black hole mass.  (u_r_horizon is kept for API compatibility.)
-      if (s.x < 2.0 * u_mass + 0.1) {
-        // Absorbed by the horizon — pure black regardless of any disk
-        // crossings along the way.  In backward ray-tracing, an absorbed ray
-        // represents a photon path that originated inside the BH; no light
-        // escapes, so the pixel contributes nothing.
+      // Kerr outer horizon r₊ = M + √(M²−a²).
+      float rPlus = u_mass + sqrt(max(u_mass*u_mass*(1.0 - u_spin*u_spin), 0.0));
+      if (s.x < rPlus + 0.1) {
         gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
       }
 
       // ── Escape — sample the warped background ──────────────────────────
       if (s.x > escapeR) {
-        float f_esc = 1.0 - 2.0 * u_mass / s.x;
-        float sinTE = max(abs(sin(s.y)), 1e-4);
-        float dphi  = Lz / (s.x * s.x * sinTE * sinTE);
+        // Kerr velocity: dr/dλ = Δ/Σ p_r,  dθ/dλ = p_θ/Σ,
+        // dφ/dλ = [Lz(Δ-a²sin²θ)/(Δsin²θ) + 2aMrE/Δ] / Σ
+        float a_e    = u_spin * u_mass;
+        float a2_e   = a_e * a_e;
+        float r2_e   = s.x * s.x;
+        float sinTE  = max(abs(sin(s.y)), 1e-4);
+        float sin2_e = sinTE * sinTE;
+        float Sig_e  = r2_e + a2_e * (1.0 - sin2_e);
+        float Dl_e   = max(r2_e - 2.0*u_mass*s.x + a2_e, 1e-6);
         vec3 escDir = normalize(blVelToCartesian(
           s.x, s.y, phi,
-          f_esc * s.z,          // dr/dλ  = f · p_r
-          s.w / (s.x * s.x),   // dθ/dλ  = p_θ / r²
-          dphi                  // dφ/dλ  = Lz / (r² sin²θ)
+          Dl_e / Sig_e * s.z,
+          s.w / Sig_e,
+          (Lz*(Dl_e - a2_e*sin2_e)/(Dl_e*sin2_e) + 2.0*a_e*u_mass*s.x*E/Dl_e) / Sig_e
         ));
-        vec3 bg = starField(escDir);
-        gl_FragColor = vec4(bg + diskAccum * lzFade, 1.0);
+        gl_FragColor = vec4(starField(escDir) + diskAccum, 1.0);
         return;
       }
     }
 
-    // Max iterations: ray trapped near photon sphere.
-    // Output only accumulated disk light — no artificial glow, which was
-    // creating a visible brownish ring artefact along the vertical axis.
-    gl_FragColor = vec4(diskAccum * lzFade, 1.0);
+    // Max iterations: ray trapped near photon sphere — output disk only.
+    gl_FragColor = vec4(diskAccum, 1.0);
   }
 `;
 
@@ -377,6 +391,8 @@ export const LENS_FRAG = /* glsl */`
 export interface LensingUniformData {
   /** Black hole mass in M (geometrized units). */
   mass:    number;
+  /** Dimensionless spin parameter a/M ∈ [0, 1). */
+  spin:    number;
   /** Observer radial coordinate in M. */
   cam_r:   number;
   /** Observer polar angle in radians (π/2 = equatorial). */
@@ -423,6 +439,7 @@ export function createLensingUniforms(
     u_cam_up_vec:  { value: data.cam_up_vec },
     u_cam_forward: { value: data.cam_forward },
     u_fov_tan:     { value: 1.0 },  // tan(45°) for 90° FOV
+    u_spin:        { value: data.spin },
   };
 }
 
@@ -435,7 +452,10 @@ export function updateLensingUniforms(
   data:     LensingUniformData,
 ): void {
   uniforms.u_mass.value        = data.mass;
-  uniforms.u_r_horizon.value   = 2.0 * data.mass;
+  uniforms.u_spin.value        = data.spin;
+  // Kerr horizon r₊ = M + √(M²−a²)
+  const a = data.spin * data.mass;
+  uniforms.u_r_horizon.value   = data.mass + Math.sqrt(Math.max(data.mass * data.mass - a * a, 0));
   uniforms.u_cam_r.value       = data.cam_r;
   uniforms.u_cam_theta.value   = data.cam_theta;
   uniforms.u_cam_phi.value     = data.cam_phi;

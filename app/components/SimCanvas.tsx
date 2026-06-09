@@ -105,6 +105,7 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
       uniforms: createLensingUniforms(
         {
           mass:        1.0,
+          spin:        0.0,
           cam_r:       initialR,
           cam_theta:   initialTheta,
           cam_phi:     initialPhi,
@@ -169,6 +170,7 @@ export default function SimCanvas({ sim, running, timeWarpRef }: Props) {
           // Update the cloned uniforms that the ShaderPass actually reads
           updateLensingUniforms(lensUniforms, {
             mass:        sim.stateRef.current.mass,
+            spin:        sim.stateRef.current.spin,
             cam_r:       frame.r,
             cam_theta:   renderTheta,
             cam_phi:     frame.phi,

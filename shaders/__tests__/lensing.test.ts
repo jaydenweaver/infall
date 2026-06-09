@@ -8,6 +8,7 @@ import {
 
 const defaults = {
   mass:        1.0,
+  spin:        0.0,
   cam_r:       6.0,
   cam_theta:   Math.PI / 2,
   cam_phi:     0.0,
@@ -34,7 +35,7 @@ describe('lensing shader', () => {
       'u_r_inner', 'u_r_outer', 'u_r_horizon',
       'u_cam_r', 'u_cam_theta', 'u_cam_phi',
       'u_cam_right', 'u_cam_up_vec', 'u_cam_forward',
-      'u_fov_tan',
+      'u_fov_tan', 'u_spin',
     ]) {
       expect(u).toHaveProperty(key);
     }
@@ -129,7 +130,7 @@ describe('lensing shader', () => {
     for (const name of [
       'tDiffuse', 'u_mass', 'u_r_inner', 'u_r_outer', 'u_r_horizon',
       'u_cam_r', 'u_cam_theta', 'u_cam_phi',
-      'u_cam_right', 'u_cam_up_vec', 'u_cam_forward', 'u_fov_tan',
+      'u_cam_right', 'u_cam_up_vec', 'u_cam_forward', 'u_fov_tan', 'u_spin',
     ]) {
       expect(LENS_FRAG).toContain(name);
     }
