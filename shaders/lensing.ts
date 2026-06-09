@@ -55,7 +55,6 @@ export const LENS_FRAG = /* glsl */`
   // ─────────────────────────────────────────────────────────────────────────
   const float PI      = 3.14159265358979;
   const int   N_STEPS = 150;   // RK4 iterations per pixel
-  const float ESCAPE  = 50.0;  // escape radius in M (far enough from BH)
 
   // ── Blackbody colour ramp (cool red → warm orange → hot white) ───────────
   vec3 blackbodyColor(float tf) {
@@ -69,11 +68,16 @@ export const LENS_FRAG = /* glsl */`
 
   // ── Analytic disk colour at equatorial crossing (r_M, phi) ──────────────
   // Replicates the disk shader's temperature gradient + Doppler beaming.
+  // u_r_inner / u_r_outer are stored in multiples of M; scale by u_mass to
+  // get absolute Boyer-Lindquist coordinates for any black hole mass.
   vec3 diskColor(float r_M, float phi) {
-    if (r_M < u_r_inner || r_M > u_r_outer) return vec3(0.0);
+    float rInner = u_r_inner * u_mass;
+    float rOuter = u_r_outer * u_mass;
+    if (r_M < rInner || r_M > rOuter) return vec3(0.0);
 
-    // Temperature gradient  T ∝ r^{-3/4}
-    float temp   = clamp(pow(u_r_inner / r_M, 0.75), 0.0, 1.0);
+    // Temperature gradient  T ∝ r^{-1/4}  (shallow — avoids strong radial
+    // colour banding that becomes visually dominant under extreme lensing)
+    float temp   = clamp(pow(rInner / r_M, 0.25), 0.0, 1.0);
     vec3  col    = blackbodyColor(temp);
 
     // Keplerian tangential speed (Newtonian,  units of c)
@@ -90,14 +94,16 @@ export const LENS_FRAG = /* glsl */`
       ? v_kep * (-sin(phi) * dx / ll + cos(phi) * dz / ll)
       : 0.0;
 
-    float D    = clamp(1.0 / (gamma_ * (1.0 - beta)), 0.05, 5.0);
-    float beam = pow(D, 3.0);  // D^3 Doppler beaming
+    // D^2.5 beaming — less extreme than D^3, capped at 3.5 to avoid a
+    // blinding hot-spot on the approaching side.
+    float D    = clamp(1.0 / (gamma_ * (1.0 - beta)), 0.1, 3.5);
+    float beam = pow(D, 2.5);
 
     // Radial fade toward outer edge
     float fade = 1.0 - smoothstep(0.55, 1.0,
-                   (r_M - u_r_inner) / (u_r_outer - u_r_inner));
+                   (r_M - rInner) / (rOuter - rInner));
 
-    return col * beam * temp * fade * 0.18;
+    return col * beam * temp * fade * 0.12;
   }
 
   // ── Schwarzschild null geodesic — Hamilton's equations ───────────────────
@@ -174,14 +180,67 @@ export const LENS_FRAG = /* glsl */`
     );
   }
 
+  // ── Procedural star field ─────────────────────────────────────────────────
+  // Cube-face projection: project dir onto the dominant cube face to get a
+  // uniform 2D grid.  Avoids the equirectangular pole singularity that
+  // produced dark teardrop artefacts at the top/bottom of the shadow.
+  vec3 starField(vec3 dir) {
+    vec3  ad = abs(dir);
+    float face;
+    vec2  uv;
+    if (ad.x >= ad.y && ad.x >= ad.z) {
+      face = dir.x > 0.0 ? 0.0 : 1.0;
+      uv   = (dir.x > 0.0 ? vec2(-dir.z,  dir.y)
+                           : vec2( dir.z,  dir.y)) / ad.x;
+    } else if (ad.y >= ad.z) {
+      face = dir.y > 0.0 ? 2.0 : 3.0;
+      uv   = (dir.y > 0.0 ? vec2( dir.x, -dir.z)
+                           : vec2( dir.x,  dir.z)) / ad.y;
+    } else {
+      face = dir.z > 0.0 ? 4.0 : 5.0;
+      uv   = (dir.z > 0.0 ? vec2( dir.x,  dir.y)
+                           : vec2(-dir.x,  dir.y)) / ad.z;
+    }
+
+    const float GRID = 45.0;
+    vec2 guv        = uv * GRID;   // [−45, 45]
+    vec2 cell       = floor(guv);
+    vec2 fr         = fract(guv);
+    // Offset cell coords by face so each face uses a disjoint region of hash space
+    vec2 faceOffset = vec2(face * 113.0, face * 97.0);
+
+    vec3 col = vec3(0.0);
+    for (int ix = -1; ix <= 1; ix++) {
+    for (int iy = -1; iy <= 1; iy++) {
+      vec2  nc      = cell + vec2(float(ix), float(iy)) + faceOffset;
+      float h1      = fract(sin(dot(nc, vec2(127.1, 311.7))) * 43758.5453);
+      float h2      = fract(sin(dot(nc, vec2(269.5, 183.3))) * 43758.5453);
+      float h3      = fract(sin(dot(nc, vec2(419.2, 371.9))) * 43758.5453);
+      float hasStar = step(h1, 0.05);   // ~5 % of cells contain a star
+      vec2  sp      = vec2(h2, h3);
+      float dist    = length(fr - sp - vec2(float(ix), float(iy)));
+      float brightness = exp(-dist * dist * 60.0)
+                       * (0.4 + h1 * 12.0)
+                       * hasStar;
+      vec3  sc = h1 < 0.015 ? vec3(0.75, 0.88, 1.00)  // blue-white
+               : h1 < 0.030 ? vec3(1.00, 0.80, 0.55)  // warm orange
+               :               vec3(1.00, 1.00, 1.00);  // white
+      col += sc * brightness;
+    }
+    }
+    return clamp(col, 0.0, 3.0);
+  }
+
   // ── Project a world-space direction to UV screen coordinates ────────────
   vec2 dirToUV(vec3 d) {
-    float dotF = dot(d, u_cam_forward);
-    if (dotF <= 0.001) return vUv;  // behind camera — keep pixel as-is
     float aspect = u_resolution.x / u_resolution.y;
+    // Clamp dotF to 0.01 rather than branching on dotF ≤ 0.  The old branch
+    // returned vUv for backward-facing rays, creating a visible seam/ring at
+    // the dotF = 0 boundary (near the shadow edge for strongly deflected rays).
+    float dotF = max(dot(d, u_cam_forward), 0.01);
     float pR = dot(d, u_cam_right)  / dotF;
     float pU = dot(d, u_cam_up_vec) / dotF;
-    return vec2(pR / (u_fov_tan * aspect), pU / u_fov_tan) * 0.5 + 0.5;
+    return clamp(vec2(pR / (u_fov_tan * aspect), pU / u_fov_tan) * 0.5 + 0.5, 0.001, 0.999);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -204,6 +263,10 @@ export const LENS_FRAG = /* glsl */`
     // local-frame energy p^(t̂) = 1.  Must be carried through the integration
     // so that H = 0 is satisfied (null geodesic, not massive-particle).
     float E2    = f0;
+
+    // Escape radius scales with mass and outer disk edge so rays always reach
+    // the background even for high-mass black holes.
+    float escapeR = max(50.0, u_r_outer * u_mass * 3.0);
 
     // ── Decompose ray direction into local tetrad components ───────────────
     //
@@ -246,8 +309,15 @@ export const LENS_FRAG = /* glsl */`
       // cos(π/2) ≈ −4e−8 for an equatorial observer does not trigger a
       // spurious crossing at the observer's own position on the first step.
       float currCosT = cos(s.y);
-      if (abs(prevCosT) > 0.05 && prevCosT * currCosT < 0.0 && diskHits < 3) {
-        // Linearly interpolate to find r and φ at the crossing
+      // Guard lowered to 0.01: the 0.05 threshold blocked genuine primary-disk
+      // crossings for a camera elevated ~0.2 rad above the equatorial plane,
+      // where prevCosT is only ~0.02-0.04 at the moment of crossing.
+      // 0.01 still rejects floating-point noise (cos(π/2) ≈ −4e−8).
+      //
+      // Higher-order images are attenuated exponentially: each successive
+      // crossing of the disk has contributed ~e^{-π} ≈ 0.04× the brightness
+      // of the previous one (photon-sphere demagnification).
+      if (abs(prevCosT) > 0.01 && prevCosT * currCosT < 0.0 && diskHits < 1) {
         float frac  = abs(prevCosT) / (abs(prevCosT) + abs(currCosT));
         float r_hit = mix(prevR,   s.x, frac);
         float p_hit = mix(prevPhi, phi, frac);
@@ -269,13 +339,19 @@ export const LENS_FRAG = /* glsl */`
       s = rk4Step(s, Lz, E2, dl);
 
       // ── Horizon — absorb the ray ─────────────────────────────────────────
-      if (s.x < u_r_horizon + 0.1) {
-        gl_FragColor = vec4(diskAccum, 1.0);
+      // Schwarzschild horizon = 2M; use u_mass directly so this scales with
+      // any black hole mass.  (u_r_horizon is kept for API compatibility.)
+      if (s.x < 2.0 * u_mass + 0.1) {
+        // Absorbed by the horizon — pure black regardless of any disk
+        // crossings along the way.  In backward ray-tracing, an absorbed ray
+        // represents a photon path that originated inside the BH; no light
+        // escapes, so the pixel contributes nothing.
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
       }
 
       // ── Escape — sample the warped background ──────────────────────────
-      if (s.x > ESCAPE) {
+      if (s.x > escapeR) {
         float f_esc = 1.0 - 2.0 * u_mass / s.x;
         float sinTE = max(abs(sin(s.y)), 1e-4);
         float dphi  = Lz / (s.x * s.x * sinTE * sinTE);
@@ -285,15 +361,16 @@ export const LENS_FRAG = /* glsl */`
           s.w / (s.x * s.x),   // dθ/dλ  = p_θ / r²
           dphi                  // dφ/dλ  = Lz / (r² sin²θ)
         ));
-        vec2 uv  = clamp(dirToUV(escDir), 0.001, 0.999);
-        vec3 bg  = texture2D(tDiffuse, uv).rgb;
+        vec3 bg = starField(escDir);
         gl_FragColor = vec4(bg + diskAccum, 1.0);
         return;
       }
     }
 
-    // Max iterations: ray trapped near photon sphere → faint ring glow
-    gl_FragColor = vec4(diskAccum + vec3(0.03, 0.015, 0.0), 1.0);
+    // Max iterations: ray trapped near photon sphere.
+    // Output only accumulated disk light — no artificial glow, which was
+    // creating a visible brownish ring artefact along the vertical axis.
+    gl_FragColor = vec4(diskAccum, 1.0);
   }
 `;
 
@@ -360,6 +437,7 @@ export function updateLensingUniforms(
   data:     LensingUniformData,
 ): void {
   uniforms.u_mass.value        = data.mass;
+  uniforms.u_r_horizon.value   = 2.0 * data.mass;
   uniforms.u_cam_r.value       = data.cam_r;
   uniforms.u_cam_theta.value   = data.cam_theta;
   uniforms.u_cam_phi.value     = data.cam_phi;
