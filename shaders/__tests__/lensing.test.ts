@@ -148,8 +148,9 @@ describe('lensing shader', () => {
     expect(LENS_FRAG).toContain('geodesicDeriv');
   });
 
-  it('fragment shader guards against spurious disk crossings', () => {
-    expect(LENS_FRAG).toContain('abs(prevCosT) > 0.01');
+  it('fragment shader uses volumetric disk integration', () => {
+    expect(LENS_FRAG).toContain('diskAlpha');
+    expect(LENS_FRAG).toContain('diskAccum');
   });
 
   it('fragment shader contains N_STEPS loop', () => {

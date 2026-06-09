@@ -107,7 +107,7 @@ export const LENS_FRAG = /* glsl */`
     float fade = 1.0 - smoothstep(0.55, 1.0,
                    (r_M - rInner) / (rOuter - rInner));
 
-    return col * beam * temp * fade * 0.30;
+    return col * beam * temp * fade * 0.50;
   }
 
   // ── Schwarzschild null geodesic — Hamilton's equations ───────────────────
@@ -300,48 +300,39 @@ export const LENS_FRAG = /* glsl */`
     float phi = phi0;
 
     // ── Main geodesic loop ─────────────────────────────────────────────────
-    float prevCosT    = cos(s.y);
-    float prevR       = s.x;
-    float prevPhi     = phi;
-    vec3  diskAccum   = vec3(0.0);
-    int   diskHits    = 0;
-    float totalDphi   = 0.0;
-    // Teardrop guard: track whether p_θ has reversed sign since the ray was
-    // emitted.  Direct disk crossings have p_θ pointing continuously toward
-    // the equatorial plane (same sign throughout).  Bounce rays — which go
-    // away from the disk first, get deflected, and return — flip p_θ sign
-    // before the crossing.  We reject any crossing that arrives after a flip.
-    float initPthSign = sign(s.w);   // +1 / 0 / −1
-    bool  pthFlipped  = false;
+    // Volumetric disk: instead of detecting discrete equatorial-plane
+    // crossings, accumulate emission from a Gaussian vertical density profile
+    // at every integration step.  This eliminates all teardrop / caustic
+    // artefacts that arise from thin-plane detection of near-polar bounce paths.
+    vec3  diskAccum = vec3(0.0);
+    float diskAlpha = 0.0;   // front-to-back opacity accumulator
 
     for (int i = 0; i < N_STEPS; i++) {
-
-      // Update bounce flag before anything else (s.w = p_θ from last step)
-      if (!pthFlipped && initPthSign != 0.0 && s.w * initPthSign < 0.0)
-        pthFlipped = true;
-
-      // ── Detect disk plane crossing (cos θ changes sign → θ crosses π/2) ─
-      float currCosT = cos(s.y);
-      if (abs(prevCosT) > 0.01 && prevCosT * currCosT < 0.0
-          && diskHits < 1 && totalDphi < PI && !pthFlipped) {
-        float frac  = abs(prevCosT) / (abs(prevCosT) + abs(currCosT));
-        float r_hit = mix(prevR,   s.x, frac);
-        float p_hit = mix(prevPhi, phi, frac);
-        diskAccum  += diskColor(r_hit, p_hit);
-        diskHits++;
-      }
-      prevCosT = currCosT;
-      prevR    = s.x;
-      prevPhi  = phi;
 
       // ── Adaptive step size: smaller near the horizon ───────────────────
       float dl = 0.5 * max(s.x / max(5.0 * u_mass, 1.0), 0.05);
 
+      // ── Volumetric accretion disk ──────────────────────────────────────
+      // Sample a Gaussian vertical profile ρ ∝ exp(−z²/2σ²) at the current
+      // position and accumulate emission weighted by density × path-length.
+      // Using diskColor() purely as an emission coefficient; opacity is
+      // tracked separately with a 0.5× scale so the disk is semi-transparent
+      // (≈40–60 % opaque per vertical crossing rather than fully saturated).
+      float rEq  = s.x * abs(sin(s.y));            // equatorial radius
+      float zBL  = s.x * cos(s.y);                 // height above midplane
+      float sig  = max(0.08 * rEq, 0.05 * u_mass); // scale height, H/R = 8 %
+      float dens = exp(-0.5 * (zBL / sig) * (zBL / sig));
+      if (dens > 0.01 && rEq > u_r_inner * u_mass && rEq < u_r_outer * u_mass) {
+        float trs  = 1.0 - diskAlpha;
+        float wt   = dens * dl;
+        diskAccum += diskColor(rEq, phi) * wt * trs;
+        diskAlpha  = min(diskAlpha + wt * trs * 0.5, 0.99);
+        if (diskAlpha > 0.98) break;
+      }
+
       // ── Advance φ with Euler using current-step values ─────────────────
       float sinT2 = max(sin(s.y) * sin(s.y), 1e-8);
-      float dphiStep = Lz / (s.x * s.x * sinT2) * dl;
-      totalDphi += abs(dphiStep);
-      phi += dphiStep;
+      phi += Lz / (s.x * s.x * sinT2) * dl;
 
       // ── RK4 step for (r, θ, p_r, p_θ) ────────────────────────────────
       s = rk4Step(s, Lz, E2, dl);
