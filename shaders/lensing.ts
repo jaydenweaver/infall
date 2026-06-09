@@ -75,10 +75,14 @@ export const LENS_FRAG = /* glsl */`
     float rOuter = u_r_outer * u_mass;
     if (r_M < rInner || r_M > rOuter) return vec3(0.0);
 
-    // Temperature gradient  T ∝ r^{-1/4}  (shallow — avoids strong radial
-    // colour banding that becomes visually dominant under extreme lensing)
-    float temp   = clamp(pow(rInner / r_M, 0.25), 0.0, 1.0);
-    vec3  col    = blackbodyColor(temp);
+    // Page-Thorne inner boundary: emission → 0 exactly at the ISCO.
+    // pow(rInner/r_M, 0.25) alone equals 1.0 at r=rInner (maximum!), which
+    // creates a bright ISCO ring that lenses into the teardrop caustic.
+    // Multiplying by (1 − √(rInner/r_M)) forces a physical zero at rInner
+    // and peaks the brightness at ~2–3× rInner, matching the Page-Thorne model.
+    float pageThorn = max(0.0, 1.0 - sqrt(rInner / r_M));
+    float temp      = clamp(pow(rInner / r_M, 0.25), 0.0, 1.0) * pageThorn;
+    vec3  col    = blackbodyColor(clamp(pow(rInner / r_M, 0.25), 0.0, 1.0));
 
     // Keplerian tangential speed (Newtonian,  units of c)
     float v_kep  = clamp(sqrt(u_mass / max(r_M, 0.1)), 0.0, 0.92);
@@ -103,7 +107,7 @@ export const LENS_FRAG = /* glsl */`
     float fade = 1.0 - smoothstep(0.55, 1.0,
                    (r_M - rInner) / (rOuter - rInner));
 
-    return col * beam * temp * fade * 0.12;
+    return col * beam * temp * fade * 0.30;
   }
 
   // ── Schwarzschild null geodesic — Hamilton's equations ───────────────────
