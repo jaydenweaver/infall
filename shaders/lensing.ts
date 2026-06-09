@@ -301,28 +301,23 @@ export const LENS_FRAG = /* glsl */`
     float prevPhi   = phi;
     vec3  diskAccum = vec3(0.0);
     int   diskHits  = 0;
-    float totalDphi = 0.0;   // accumulated |Δφ| — rejects secondary images (large Lz)
-    // Save the initial theta-momentum sign.  Direct disk crossings have the ray
-    // moving TOWARD the equatorial plane from the start (pth has the same sign
-    // as (π/2 − θ_cam)).  Near-polar bounce rays start going AWAY from the disk
-    // (opposite sign), loop back through θ=π/2, and form the teardrop artefacts;
-    // they are rejected by requiring initialPth*(PI/2−u_cam_theta) ≥ 0.
-    float initialPth = s.w;
+    float totalDphi = 0.0;  // accumulated |Δφ|
+    float minR      = r0;   // minimum approach radius — proxy for photon-sphere proximity
 
     for (int i = 0; i < N_STEPS; i++) {
 
       // ── Detect disk plane crossing (cos θ changes sign → θ crosses π/2) ─
       float currCosT = cos(s.y);
-      // Two guards together reject all secondary / back-side images:
-      //  • totalDphi < PI  — drops crossings after >π of azimuthal travel (large-Lz secondaries)
-      //  • initialPth*(PI/2−cam_theta) ≥ 0 — drops near-polar bounce crossings (Lz≈0 teardrops)
       if (abs(prevCosT) > 0.01 && prevCosT * currCosT < 0.0
-          && diskHits < 1 && totalDphi < PI
-          && initialPth * (PI / 2.0 - u_cam_theta) >= 0.0) {
+          && diskHits < 1 && totalDphi < PI) {
         float frac  = abs(prevCosT) / (abs(prevCosT) + abs(currCosT));
         float r_hit = mix(prevR,   s.x, frac);
         float p_hit = mix(prevPhi, phi, frac);
-        diskAccum  += diskColor(r_hit, p_hit);
+        // Fade out disk emission for rays that graze the photon sphere (r≈3M).
+        // Primary disk crossings have minR well above 4.5M; teardrop/ring
+        // crossings dip to ~3M.  smoothstep maps [3M, 4.5M] → [0, 1].
+        float proximityFade = smoothstep(3.0 * u_mass, 4.5 * u_mass, minR);
+        diskAccum  += diskColor(r_hit, p_hit) * proximityFade;
         diskHits++;
       }
       prevCosT = currCosT;
@@ -340,6 +335,7 @@ export const LENS_FRAG = /* glsl */`
 
       // ── RK4 step for (r, θ, p_r, p_θ) ────────────────────────────────
       s = rk4Step(s, Lz, E2, dl);
+      minR = min(minR, s.x);
 
       // ── Horizon — absorb the ray ─────────────────────────────────────────
       // Schwarzschild horizon = 2M; use u_mass directly so this scales with
