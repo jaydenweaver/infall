@@ -254,9 +254,9 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef, f
       // Adaptive step count: target 60 fps; scale steps between 80–600
       const targetMs = 16.667;
       if (avgFrameMs > targetMs * 1.1) {
-        maxSteps = Math.max(80, maxSteps - 10);
+        maxSteps = Math.max(150, maxSteps - 10);
       } else if (avgFrameMs < targetMs * 0.9) {
-        maxSteps = Math.min(150, maxSteps + 5);
+        maxSteps = Math.min(600, maxSteps + 5);
       }
       const orbitLerp = 1 - Math.pow(0.88, dt);
       const lookLerp  = 1 - Math.pow(0.95, dt);
