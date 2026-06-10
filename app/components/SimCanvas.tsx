@@ -251,10 +251,10 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef, f
       stepsRef.current = maxSteps;
       const dt  = Math.min(frameMs / 16.667, 4);
 
-      // Adaptive step count: target 30 fps; scale steps between 150–600
-      const targetMs = 33.3;
+      // Adaptive step count: target 60 fps; scale steps between 80–600
+      const targetMs = 16.667;
       if (avgFrameMs > targetMs * 1.1) {
-        maxSteps = Math.max(150, maxSteps - 10);
+        maxSteps = Math.max(80, maxSteps - 10);
       } else if (avgFrameMs < targetMs * 0.9) {
         maxSteps = Math.min(600, maxSteps + 5);
       }
@@ -292,7 +292,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef, f
 
       // Camera position
       const r           = camDistanceRef.current;
-      const renderTheta = Math.max(0.05, Math.min(Math.PI - 0.05, latestTheta - camElevation));
+      const renderTheta = Math.max(0.05, Math.min(Math.PI - 0.05, Math.PI / 2 - camElevation));
       const renderPhi   = latestPhi + camPhiOffset;
       const [cx, cy, cz] = blToCartesian(r, renderTheta, renderPhi);
       camera.position.set(cx, cy, cz);
