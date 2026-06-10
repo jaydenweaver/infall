@@ -19,7 +19,7 @@ import {
 
 const DISK_INNER_M        = 5.0;
 const DISK_OUTER_M        = 22.0;
-const CAM_THETA_ELEVATION = 0.2;
+const CAM_THETA_ELEVATION = -0.45;
 const DRAG_SENSITIVITY    = 0.005;
 const SCROLL_SENSITIVITY  = 0.05;
 
