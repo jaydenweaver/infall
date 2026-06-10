@@ -82,6 +82,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
           cam_forward: [initFwd.x,   initFwd.y,   initFwd.z],
           cam_offset:  [0, 0, 0],
           resolution:  [mount.clientWidth, mount.clientHeight],
+          max_steps:   600,
         },
         DISK_INNER_M,
         DISK_OUTER_M,
@@ -233,14 +234,26 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
     let latestSpin    = 0.0;
     let frameCount    = 0;
     let lastFrameTime = performance.now();
+    let avgFrameMs    = 16.667;
+    let maxSteps      = 600;
 
     function animate() {
       rafId = requestAnimationFrame(animate);
 
-      // Frame-rate-independent lerp factors
-      const now = performance.now();
-      const dt  = Math.min((now - lastFrameTime) / 16.667, 4);
+      // Frame-rate-independent lerp factors + FPS tracking
+      const now    = performance.now();
+      const frameMs = now - lastFrameTime;
       lastFrameTime = now;
+      avgFrameMs   += (frameMs - avgFrameMs) * 0.1;   // exponential moving avg
+      const dt  = Math.min(frameMs / 16.667, 4);
+
+      // Adaptive step count: target 30 fps; scale steps between 150–600
+      const targetMs = 33.3;
+      if (avgFrameMs > targetMs * 1.1) {
+        maxSteps = Math.max(150, maxSteps - 10);
+      } else if (avgFrameMs < targetMs * 0.9) {
+        maxSteps = Math.min(600, maxSteps + 5);
+      }
       const orbitLerp = 1 - Math.pow(0.88, dt);
       const lookLerp  = 1 - Math.pow(0.95, dt);
 
@@ -304,6 +317,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
         cam_forward: [camFwd.x,   camFwd.y,   camFwd.z],
         cam_offset:  [0, 0, 0],
         resolution:  [mount!.clientWidth, mount!.clientHeight],
+        max_steps:   maxSteps,
       });
       lensUniforms.u_frame.value = frameCount++;
 

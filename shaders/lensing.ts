@@ -41,6 +41,7 @@ export const LENS_FRAG = /* glsl */`
   uniform float u_spin;
   uniform float u_frame;
   uniform vec3  u_cam_offset;
+  uniform int   u_max_steps;
 
   varying vec2 vUv;
 
@@ -251,6 +252,7 @@ export const LENS_FRAG = /* glsl */`
     int   crossings=0;
 
     for(int i=0;i<STEPS;i++){
+      if(i>=u_max_steps) break;
       float r=length(p);
 
       // Absorbed by event horizon
@@ -327,6 +329,7 @@ export interface LensingUniformData {
   cam_forward: [number, number, number];
   cam_offset:  [number, number, number];
   resolution:  [number, number];
+  max_steps:   number;
 }
 
 export type LensingUniforms = Record<string, { value: unknown }>;
@@ -354,6 +357,7 @@ export function createLensingUniforms(
     u_fov_tan:     { value: 1.0 },
     u_spin:        { value: data.spin },
     u_frame:       { value: 0.0 },
+    u_max_steps:   { value: data.max_steps },
   };
 }
 
@@ -373,4 +377,5 @@ export function updateLensingUniforms(
   uniforms.u_cam_forward.value = data.cam_forward;
   uniforms.u_cam_offset.value  = data.cam_offset;
   uniforms.u_resolution.value  = data.resolution;
+  uniforms.u_max_steps.value   = data.max_steps;
 }
