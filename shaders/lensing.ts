@@ -45,10 +45,6 @@ export const LENS_FRAG = /* glsl */`
 
   varying vec2 vUv;
 
-  // Disk tilt: 30° around the x-axis  (cos/sin precomputed)
-  const float DISK_TC=0.866025;  // cos(30°)
-  const float DISK_TS=0.500000;  // sin(30°)
-
   const int STEPS = 600;
 
   // ── ACES filmic tone-map ──────────────────────────────────────────────────
@@ -161,10 +157,9 @@ export const LENS_FRAG = /* glsl */`
          float sz=(0.05+hash2(nc+99.0)*0.01)/adm;
          float g=exp(-dot(dv,dv)/(sz*sz));
          float bri=0.6+hash2(nc+123.0)*1.4;
-         float tw=0.85+0.15*sin(u_frame*0.05*(3.0+hash2(nc+73.7)*2.0));
          float szH=sz*6.0;
          float gH=exp(-dot(dv,dv)/(szH*szH));
-         col+=starColor(bv)*bri*(g+gH*0.04)*tw;}}}
+         col+=starColor(bv)*bri*(g+gH*0.04);}}}
 
     // Layer B — faint/numerous stars
     {float G=68.0;vec2 gc=floor(uv*G);
@@ -188,19 +183,16 @@ export const LENS_FRAG = /* glsl */`
   vec3 diskColor(vec3 hit, float crossingSide){
     float rInner=u_r_inner*u_mass;
     float rOuter=u_r_outer*u_mass;
-    // Disk axes rotated by u_cam_phi around y so tilt always faces the camera
-    float st=sin(u_cam_theta),ct=cos(u_cam_theta),sp=sin(u_cam_phi),cp=cos(u_cam_phi);
-    vec3  d_ax1=vec3(cp, 0.0, -sp);
-    vec3  d_ax2=vec3(DISK_TC*sp, -DISK_TS, DISK_TC*cp);
-    float r_disk=length(vec2(dot(hit,d_ax1),dot(hit,d_ax2)));
+    float r_disk=length(hit.xz);
     if(r_disk<rInner||r_disk>rOuter) return vec3(0.0);
 
     float pageThorn=max(0.0,1.0-sqrt(rInner/r_disk));
     float temp=1.2e5*pow(rInner/r_disk,1.5)*sqrt(pageThorn);
 
-    float phi_d=atan(dot(hit,d_ax2),dot(hit,d_ax1));
-    vec3  orb=normalize(-sin(phi_d)*d_ax1+cos(phi_d)*d_ax2);
+    float phi_d=atan(hit.z,hit.x);
+    vec3  orb=vec3(-sin(phi_d),0.0,cos(phi_d));
     float v_kep=clamp(sqrt(u_mass/max(r_disk,0.1)),0.0,0.9);
+    float st=sin(u_cam_theta),ct=cos(u_cam_theta),sp=sin(u_cam_phi),cp=cos(u_cam_phi);
     vec3  camP=vec3(u_cam_r*st*cp,u_cam_r*ct,u_cam_r*st*sp);
     float beta=v_kep*dot(orb,normalize(camP-hit));
     float gam=1.0/sqrt(max(1.0-v_kep*v_kep,1e-6));
@@ -209,14 +201,11 @@ export const LENS_FRAG = /* glsl */`
     float beaming=pow(doppler,3.0);
 
     float logR=log(max(r_disk/rInner,0.001));
-    float dr1=dot(hit,d_ax1)/r_disk;
-    float dr2=dot(hit,d_ax2)/r_disk;
-    vec3 noiseCoord=vec3(dr1*1.5,logR*7.0,dr2*1.5);
+    vec3 noiseCoord=vec3(hit.x/r_disk*1.5,logR*7.0,hit.z/r_disk*1.5);
     float turb=0.35+0.65*fbm3(noiseCoord);
 
     float fade=1.0-smoothstep(0.6,1.0,(r_disk-rInner)/(rOuter-rInner));
-    // Direct image: ray came from same side of disk as camera; lensed image: opposite side
-    float camSide=DISK_TS*sp*camP.x+DISK_TC*camP.y+DISK_TS*cp*camP.z;
+    float camSide=camP.y;
     float dim=(crossingSide*camSide>0.0)?1.0:0.55;
 
     return blackbody(temp)*turb*fade*pageThorn*4.0*dim*beaming;
@@ -226,11 +215,8 @@ export const LENS_FRAG = /* glsl */`
   void main(){
     float aspect=u_resolution.x/u_resolution.y;
 
-    // Sub-pixel Halton jitter
-    float fn=mod(u_frame,16.0)+1.0;
-    vec2 jitter=vec2(halton(fn,2.0)-0.5,halton(fn,3.0)-0.5)/u_resolution*2.0;
-    vec2 ndc=vUv*2.0-1.0+jitter;
-    vec2 ndc0=vUv*2.0-1.0;          // non-jittered — used for stable starfield
+    vec2 ndc=vUv*2.0-1.0;
+    vec2 ndc0=ndc;
 
     // ── Camera position in Cartesian geometric units (y-up) ──────────────
     float sinT=sin(u_cam_theta),cosT=cos(u_cam_theta);
@@ -299,9 +285,9 @@ export const LENS_FRAG = /* glsl */`
       v+=0.5*(accel+accel2)*dt;
       v=normalize(v);   // keep unit direction (null-ray constraint)
 
-      // ── Tilted disk plane crossing (normal rotates with cam_phi) ─────
-      float dN_prev=DISK_TS*sinP*p_prev.x+DISK_TC*p_prev.y+DISK_TS*cosP*p_prev.z;
-      float dN     =DISK_TS*sinP*p.x     +DISK_TC*p.y     +DISK_TS*cosP*p.z;
+      // ── Equatorial plane crossing (y=0) → sample disk ─────────────────
+      float dN_prev=p_prev.y;
+      float dN     =p.y;
       if(crossings<3&&dN_prev*dN<0.0){
         float t=abs(dN_prev)/(abs(dN_prev)+abs(dN));
         vec3  hp=mix(p_prev,p,t);
