@@ -158,7 +158,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
       if (document.pointerLockElement === mount) {
         document.exitPointerLock();
       } else {
-        mount.requestPointerLock();
+        mount!.requestPointerLock();
       }
     }
 
