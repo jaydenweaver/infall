@@ -105,11 +105,14 @@ export const LENS_FRAG = /* glsl */`
 
   // ── Star spectral colour from B-V index (same classification as repo) ─────
   vec3 starColor(float bv){
-    if(bv<0.0)  return vec3(0.60,0.70,1.00);   // O/B  — blue
-    if(bv<0.3)  return vec3(0.85,0.88,1.00);   // A    — blue-white
-    if(bv<0.6)  return vec3(1.00,0.96,0.90);   // F    — white
-    if(bv<1.0)  return vec3(1.00,0.85,0.60);   // G/K  — yellow-orange
-    return        vec3(1.00,0.60,0.40);         // M    — red
+    vec3 c;
+    if(bv<0.0)       c=vec3(0.60,0.70,1.00);   // O/B  — blue
+    else if(bv<0.3)  c=vec3(0.85,0.88,1.00);   // A    — blue-white
+    else if(bv<0.6)  c=vec3(1.00,0.96,0.90);   // F    — white
+    else if(bv<1.0)  c=vec3(1.00,0.85,0.60);   // G/K  — yellow-orange
+    else             c=vec3(1.00,0.60,0.40);    // M    — red
+    // Tint toward purple
+    return mix(c, vec3(0.75,0.45,1.00), 0.30);
   }
 
   // ── Procedural starfield ──────────────────────────────────────────────────
@@ -117,12 +120,12 @@ export const LENS_FRAG = /* glsl */`
   // → round Gaussian PSF stars; no square grid artifacts.
   vec3 starField(vec3 dir){
     dir=normalize(dir);
-    vec3 col=vec3(0.0);
+    vec3 col=vec3(0.012,0.005,0.025);  // purple ambient
 
     // ── Milky Way band ────────────────────────────────────────────────────
     {vec3 gp=normalize(vec3(0.187,0.934,0.302));
      float band=1.0-abs(dot(dir,gp));
-     float mw=pow(band,3.5)*fbm(dir.xy*3.0+dir.z*1.5)*0.20;
+     float mw=pow(band,3.5)*fbm(dir.xy*3.0+dir.z*1.5)*0.35;
      col+=vec3(0.55,0.62,0.90)*mw;}
 
     // ── Nebulae ───────────────────────────────────────────────────────────
@@ -135,21 +138,21 @@ export const LENS_FRAG = /* glsl */`
 
     // ── Cube-face UV ──────────────────────────────────────────────────────
     vec3 ad=abs(dir);
-    vec2 uv;float face;
-    if(ad.x>=ad.y&&ad.x>=ad.z){uv=dir.yz/ad.x;face=sign(dir.x);}
-    else if(ad.y>=ad.z)        {uv=dir.xz/ad.y;face=sign(dir.y)+2.0;}
-    else                       {uv=dir.xy/ad.z;face=sign(dir.z)+5.0;}
+    vec2 uv;float face;float adm;
+    if(ad.x>=ad.y&&ad.x>=ad.z){uv=dir.yz/ad.x;face=sign(dir.x);adm=ad.x;}
+    else if(ad.y>=ad.z)        {uv=dir.xz/ad.y;face=sign(dir.y)+2.0;adm=ad.y;}
+    else                       {uv=dir.xy/ad.z;face=sign(dir.z)+5.0;adm=ad.z;}
 
-    // Layer A — bright/rare stars  (dv in grid-cell units, sz ~0.3 cells → tight dot)
+    // Layer A — bright/rare stars
     {float G=28.0;vec2 gc=floor(uv*G);
      for(int dx=0;dx<3;dx++)for(int dy=0;dy<3;dy++){
        vec2 nc=gc+vec2(float(dx)-1.0,float(dy)-1.0);
        float n=hash2(nc*31.7+vec2(face*17.3,face*91.1));
-       if(n>0.95){
+       if(n>0.995){
          vec2 sp=nc+vec2(hash2(nc+7.3),hash2(nc+13.7));
-         vec2 dv=uv*G-sp;                           // grid-cell units
+         vec2 dv=uv*G-sp;
          float bv=hash2(nc+41.1)*2.4-0.4;
-         float sz=0.07+hash2(nc+99.0)*0.01;         // 0.07–0.08 cells
+         float sz=(0.05+hash2(nc+99.0)*0.01)/adm;
          float g=exp(-dot(dv,dv)/(sz*sz));
          float bri=0.6+hash2(nc+123.0)*1.4;
          float tw=0.85+0.15*sin(u_frame*0.05*(3.0+hash2(nc+73.7)*2.0));
@@ -162,11 +165,11 @@ export const LENS_FRAG = /* glsl */`
      for(int dx=0;dx<3;dx++)for(int dy=0;dy<3;dy++){
        vec2 nc=gc+vec2(float(dx)-1.0,float(dy)-1.0);
        float n=hash2(nc*53.1+vec2(face*29.7,face*67.3));
-       if(n>0.87){
+       if(n>0.99){
          vec2 sp=nc+vec2(hash2(nc+17.1),hash2(nc+23.9));
          vec2 dv=uv*G-sp;
          float bv=hash2(nc+55.3)*2.4-0.4;
-         float sz=0.15+hash2(nc+83.0)*0.01;         // 0.13–0.14 cells
+         float sz=(0.13+hash2(nc+83.0)*0.01)/adm;
          float g=exp(-dot(dv,dv)/(sz*sz));
          float bri=0.15+hash2(nc+144.0)*0.35;
          col+=starColor(bv)*bri*g;}}}
@@ -185,17 +188,21 @@ export const LENS_FRAG = /* glsl */`
 
     // Novikov-Thorne temperature profile (same formula as repo)
     float pageThorn=max(0.0,1.0-sqrt(rInner/r_disk));
-    float temp=2.0e7*pow(rInner/r_disk,0.75)*sqrt(pageThorn);
+    float temp=1.8e5*pow(rInner/r_disk,2.0)*sqrt(pageThorn);
 
-    // Keplerian Doppler shift
+    // Keplerian Doppler shift + relativistic beaming
     float phi_d=atan(hit.z,hit.x);
     vec3  orb=vec3(-sin(phi_d),0.0,cos(phi_d));
     float v_kep=clamp(sqrt(u_mass/max(r_disk,0.1)),0.0,0.9);
     float st=sin(u_cam_theta),ct=cos(u_cam_theta),sp=sin(u_cam_phi),cp=cos(u_cam_phi);
     vec3  camP=vec3(u_cam_r*st*cp,u_cam_r*ct,u_cam_r*st*sp);
-    float beta=v_kep*dot(orb,normalize(hit-camP));
+    // beta > 0 when orbital motion aims toward observer → blueshift (D > 1)
+    float beta=v_kep*dot(orb,normalize(camP-hit));
     float gam=1.0/sqrt(max(1.0-v_kep*v_kep,1e-6));
-    temp*=clamp(1.0/(gam*(1.0-beta)),0.1,3.0);
+    float doppler=clamp(1.0/(gam*(1.0-beta)),0.05,8.0);
+    temp*=doppler;
+    // Relativistic beaming: approaching side appears dramatically brighter (D^3 factor)
+    float beaming=pow(doppler,3.0);
 
     // Azimuthally-elongated turbulence (Interstellar / Gargantua style).
     //
@@ -217,7 +224,7 @@ export const LENS_FRAG = /* glsl */`
     // Secondary images are dimmer
     float dim=imgOrder<0.5?1.0:0.30;
 
-    return blackbody(temp)*turb*fade*pageThorn*4.0*dim;
+    return blackbody(temp)*turb*fade*pageThorn*4.0*dim*beaming;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -316,7 +323,7 @@ export const LENS_FRAG = /* glsl */`
 
     // Lensing deflection on non-jittered ray → stable star sampling
     vec3 v_stars=normalize(v0+(v-v_init));
-    gl_FragColor=vec4(aces(starField(v_stars)+diskAccum),1.0);
+    gl_FragColor=vec4(aces(starField(v_stars)*0.25+diskAccum),1.0);
   }
 `;
 

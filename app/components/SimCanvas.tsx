@@ -101,7 +101,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
     let pitchTarget = 0;
     let yaw         = 0;
     let pitch       = 0;
-    const SMOOTH    = 0.05;   // lerp factor per frame (lower = smoother)
+    const SMOOTH    = 0.05;
     const canvas = renderer.domElement;
 
     function onMouseMove(e: MouseEvent) {
