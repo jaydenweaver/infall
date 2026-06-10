@@ -2,8 +2,9 @@
 
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
-import { ShaderPass }     from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { EffectComposer }   from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { ShaderPass }       from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { UnrealBloomPass }  from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import type { SimControls } from '@/hooks/useSim';
 import {
   blToCartesian,
@@ -90,11 +91,19 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
       fragmentShader: LENS_FRAG,
     });
 
-    lensingPass.renderToScreen = true;
+    lensingPass.renderToScreen = false;
     const lensUniforms = lensingPass.uniforms as LensingUniforms;
+
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(mount.clientWidth, mount.clientHeight),
+      0.9,   // strength
+      0.6,   // radius
+      0.7,  // luminance threshold
+    );
 
     const composer = new EffectComposer(renderer);
     composer.addPass(lensingPass);
+    composer.addPass(bloomPass);
 
     // ── Orbit drag ────────────────────────────────────────────────────────────
     let camElevation    = CAM_THETA_ELEVATION;
