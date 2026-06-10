@@ -183,7 +183,8 @@ export const LENS_FRAG = /* glsl */`
   }
 
   // ── Accretion disk colour at an equatorial crossing ───────────────────────
-  vec3 diskColor(vec3 hit, float imgOrder){
+  // crossingSide: sign of dot(diskNormal, p_prev) — positive = same side as camera = direct image
+  vec3 diskColor(vec3 hit, float crossingSide){
     float rInner=u_r_inner*u_mass;
     float rOuter=u_r_outer*u_mass;
     vec3  d_ax2=vec3(0.0,-DISK_TS,DISK_TC);
@@ -209,7 +210,9 @@ export const LENS_FRAG = /* glsl */`
     float turb=0.35+0.65*fbm3(noiseCoord);
 
     float fade=1.0-smoothstep(0.6,1.0,(r_disk-rInner)/(rOuter-rInner));
-    float dim=imgOrder<0.5?1.0:0.30;
+    // Direct image: ray came from same side of disk as camera; lensed image: opposite side
+    float camSide=DISK_TC*camP.y+DISK_TS*camP.z;
+    float dim=(crossingSide*camSide>0.0)?1.0:0.55;
 
     return blackbody(temp)*turb*fade*pageThorn*4.0*dim*beaming;
   }
@@ -246,7 +249,6 @@ export const LENS_FRAG = /* glsl */`
     vec3  diskAccum=vec3(0.0);
     float diskAlpha=0.0;
     int   crossings=0;
-    float imgOrder =0.0;
 
     for(int i=0;i<STEPS;i++){
       float r=length(p);
@@ -297,13 +299,12 @@ export const LENS_FRAG = /* glsl */`
       if(crossings<3&&dN_prev*dN<0.0){
         float t=abs(dN_prev)/(abs(dN_prev)+abs(dN));
         vec3  hp=mix(p_prev,p,t);
-        vec3  col=diskColor(hp,imgOrder);
+        vec3  col=diskColor(hp,dN_prev);
         float bri=length(col);
         if(bri>1e-5){
           float w=1.0-diskAlpha;
           diskAccum+=col*w;
           diskAlpha=min(diskAlpha+min(bri,0.9)*w,0.99);}
-        imgOrder+=1.0;
         crossings++;}
     }
 
