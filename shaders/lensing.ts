@@ -188,17 +188,19 @@ export const LENS_FRAG = /* glsl */`
   vec3 diskColor(vec3 hit, float crossingSide){
     float rInner=u_r_inner*u_mass;
     float rOuter=u_r_outer*u_mass;
-    vec3  d_ax2=vec3(0.0,-DISK_TS,DISK_TC);
-    float r_disk=length(vec2(hit.x,dot(hit,d_ax2)));
+    // Disk axes rotated by u_cam_phi around y so tilt always faces the camera
+    float st=sin(u_cam_theta),ct=cos(u_cam_theta),sp=sin(u_cam_phi),cp=cos(u_cam_phi);
+    vec3  d_ax1=vec3(cp, 0.0, -sp);
+    vec3  d_ax2=vec3(DISK_TC*sp, -DISK_TS, DISK_TC*cp);
+    float r_disk=length(vec2(dot(hit,d_ax1),dot(hit,d_ax2)));
     if(r_disk<rInner||r_disk>rOuter) return vec3(0.0);
 
     float pageThorn=max(0.0,1.0-sqrt(rInner/r_disk));
     float temp=1.2e5*pow(rInner/r_disk,1.5)*sqrt(pageThorn);
 
-    float phi_d=atan(dot(hit,d_ax2),hit.x);
-    vec3  orb=normalize(-sin(phi_d)*vec3(1.0,0.0,0.0)+cos(phi_d)*d_ax2);
+    float phi_d=atan(dot(hit,d_ax2),dot(hit,d_ax1));
+    vec3  orb=normalize(-sin(phi_d)*d_ax1+cos(phi_d)*d_ax2);
     float v_kep=clamp(sqrt(u_mass/max(r_disk,0.1)),0.0,0.9);
-    float st=sin(u_cam_theta),ct=cos(u_cam_theta),sp=sin(u_cam_phi),cp=cos(u_cam_phi);
     vec3  camP=vec3(u_cam_r*st*cp,u_cam_r*ct,u_cam_r*st*sp);
     float beta=v_kep*dot(orb,normalize(camP-hit));
     float gam=1.0/sqrt(max(1.0-v_kep*v_kep,1e-6));
@@ -207,12 +209,14 @@ export const LENS_FRAG = /* glsl */`
     float beaming=pow(doppler,3.0);
 
     float logR=log(max(r_disk/rInner,0.001));
-    vec3 noiseCoord=vec3(hit.x/r_disk*1.5,logR*7.0,hit.z/r_disk*1.5);
+    float dr1=dot(hit,d_ax1)/r_disk;
+    float dr2=dot(hit,d_ax2)/r_disk;
+    vec3 noiseCoord=vec3(dr1*1.5,logR*7.0,dr2*1.5);
     float turb=0.35+0.65*fbm3(noiseCoord);
 
     float fade=1.0-smoothstep(0.6,1.0,(r_disk-rInner)/(rOuter-rInner));
     // Direct image: ray came from same side of disk as camera; lensed image: opposite side
-    float camSide=DISK_TC*camP.y+DISK_TS*camP.z;
+    float camSide=DISK_TS*sp*camP.x+DISK_TC*camP.y+DISK_TS*cp*camP.z;
     float dim=(crossingSide*camSide>0.0)?1.0:0.55;
 
     return blackbody(temp)*turb*fade*pageThorn*4.0*dim*beaming;
@@ -295,9 +299,9 @@ export const LENS_FRAG = /* glsl */`
       v+=0.5*(accel+accel2)*dt;
       v=normalize(v);   // keep unit direction (null-ray constraint)
 
-      // ── Tilted disk plane crossing → sample disk ──────────────────────
-      float dN_prev=DISK_TC*p_prev.y+DISK_TS*p_prev.z;
-      float dN     =DISK_TC*p.y     +DISK_TS*p.z;
+      // ── Tilted disk plane crossing (normal rotates with cam_phi) ─────
+      float dN_prev=DISK_TS*sinP*p_prev.x+DISK_TC*p_prev.y+DISK_TS*cosP*p_prev.z;
+      float dN     =DISK_TS*sinP*p.x     +DISK_TC*p.y     +DISK_TS*cosP*p.z;
       if(crossings<3&&dN_prev*dN<0.0){
         float t=abs(dN_prev)/(abs(dN_prev)+abs(dN));
         vec3  hp=mix(p_prev,p,t);
