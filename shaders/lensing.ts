@@ -45,6 +45,10 @@ export const LENS_FRAG = /* glsl */`
 
   varying vec2 vUv;
 
+  // Disk tilt: 30° around the x-axis  (cos/sin precomputed)
+  const float DISK_TC=0.866025;  // cos(30°)
+  const float DISK_TS=0.500000;  // sin(30°)
+
   const int STEPS = 600;
 
   // ── ACES filmic tone-map ──────────────────────────────────────────────────
@@ -183,14 +187,15 @@ export const LENS_FRAG = /* glsl */`
   vec3 diskColor(vec3 hit, float crossingSide){
     float rInner=u_r_inner*u_mass;
     float rOuter=u_r_outer*u_mass;
-    float r_disk=length(hit.xz);
+    vec3  d_ax2=vec3(0.0,-DISK_TS,DISK_TC);
+    float r_disk=length(vec2(hit.x,dot(hit,d_ax2)));
     if(r_disk<rInner||r_disk>rOuter) return vec3(0.0);
 
     float pageThorn=max(0.0,1.0-sqrt(rInner/r_disk));
     float temp=1.2e5*pow(rInner/r_disk,1.5)*sqrt(pageThorn);
 
-    float phi_d=atan(hit.z,hit.x);
-    vec3  orb=vec3(-sin(phi_d),0.0,cos(phi_d));
+    float phi_d=atan(dot(hit,d_ax2),hit.x);
+    vec3  orb=normalize(-sin(phi_d)*vec3(1.0,0.0,0.0)+cos(phi_d)*d_ax2);
     float v_kep=clamp(sqrt(u_mass/max(r_disk,0.1)),0.0,0.9);
     float st=sin(u_cam_theta),ct=cos(u_cam_theta),sp=sin(u_cam_phi),cp=cos(u_cam_phi);
     vec3  camP=vec3(u_cam_r*st*cp,u_cam_r*ct,u_cam_r*st*sp);
@@ -205,7 +210,8 @@ export const LENS_FRAG = /* glsl */`
     float turb=0.35+0.65*fbm3(noiseCoord);
 
     float fade=1.0-smoothstep(0.6,1.0,(r_disk-rInner)/(rOuter-rInner));
-    float camSide=camP.y;
+    // Direct image: ray came from same side of disk as camera; lensed image: opposite side
+    float camSide=DISK_TC*camP.y+DISK_TS*camP.z;
     float dim=(crossingSide*camSide>0.0)?1.0:0.55;
 
     return blackbody(temp)*turb*fade*pageThorn*4.0*dim*beaming;
@@ -285,9 +291,9 @@ export const LENS_FRAG = /* glsl */`
       v+=0.5*(accel+accel2)*dt;
       v=normalize(v);   // keep unit direction (null-ray constraint)
 
-      // ── Equatorial plane crossing (y=0) → sample disk ─────────────────
-      float dN_prev=p_prev.y;
-      float dN     =p.y;
+      // ── Tilted disk plane crossing → sample disk ──────────────────────
+      float dN_prev=DISK_TC*p_prev.y+DISK_TS*p_prev.z;
+      float dN     =DISK_TC*p.y     +DISK_TS*p.z;
       if(crossings<3&&dN_prev*dN<0.0){
         float t=abs(dN_prev)/(abs(dN_prev)+abs(dN));
         vec3  hp=mix(p_prev,p,t);
