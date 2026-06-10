@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { ShaderPass }     from 'three/examples/jsm/postprocessing/ShaderPass.js';
@@ -20,6 +20,7 @@ import {
 const DISK_INNER_M        = 6.0;
 const DISK_OUTER_M        = 22.0;
 const CAM_THETA_ELEVATION = 0.2;
+const MOUSE_SENSITIVITY   = 0.0015;
 
 interface Props {
   sim: SimControls;
@@ -32,6 +33,10 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
   const mountRef   = useRef<HTMLDivElement>(null);
   const runningRef = useRef(running);
   runningRef.current = running;
+  const simRef = useRef(sim);
+  simRef.current = sim;
+
+  const [locked, setLocked] = useState(false);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -44,7 +49,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
     renderer.setClearColor(0x000000, 1);
     mount.appendChild(renderer.domElement);
 
-    // ── Scene / camera (scene is empty — lensing shader draws everything) ────
+    // ── Scene / camera ────────────────────────────────────────────────────────
     const scene  = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(
       90,
@@ -58,11 +63,8 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
     camera.position.set(icx, icy, icz);
     const [iux, iuy, iuz] = cameraUp(initialTheta, initialPhi);
     camera.up.set(iux, iuy, iuz);
-    camera.lookAt(0, 0, 0);
 
     // ── Lensing ShaderPass ────────────────────────────────────────────────────
-    // Derives initial camera basis from the camera we positioned above.
-    camera.updateMatrixWorld();
     const initFwd   = camera.position.clone().negate().normalize();
     const initUp    = camera.up.clone().normalize();
     const initRight = new THREE.Vector3().crossVectors(initFwd, initUp).normalize();
@@ -88,12 +90,43 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
       fragmentShader: LENS_FRAG,
     });
 
-    // Render directly to screen — no CopyPass needed.
     lensingPass.renderToScreen = true;
     const lensUniforms = lensingPass.uniforms as LensingUniforms;
 
     const composer = new EffectComposer(renderer);
     composer.addPass(lensingPass);
+
+    // ── Mouse look (pointer lock) ─────────────────────────────────────────────
+    let yaw   = 0;
+    let pitch = 0;
+    const canvas = renderer.domElement;
+
+    function onMouseMove(e: MouseEvent) {
+      if (document.pointerLockElement !== canvas) return;
+      yaw   -= e.movementX * MOUSE_SENSITIVITY;
+      pitch -= e.movementY * MOUSE_SENSITIVITY;
+      pitch  = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
+    }
+
+    function onPointerLockChange() {
+      setLocked(document.pointerLockElement === canvas);
+    }
+
+    function requestLock() {
+      if (document.pointerLockElement !== canvas) {
+        // requestPointerLock returns a Promise in modern browsers
+        const result = canvas.requestPointerLock();
+        if (result instanceof Promise) {
+          result.catch(() => {/* denied — ignore */});
+        }
+      }
+    }
+
+    // Listen on both canvas and mount so the full div area is clickable
+    canvas.addEventListener('click', requestLock);
+    mount.addEventListener('click', requestLock);
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('pointerlockchange', onPointerLockChange);
 
     // ── Resize handler ────────────────────────────────────────────────────────
     function onResize() {
@@ -117,15 +150,15 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
 
       // Advance simulation
       if (runningRef.current) {
-        if (sim.stateRef.current) {
-          sim.stateRef.current.time_warp = timeWarpRef.current;
+        if (simRef.current.stateRef.current) {
+          simRef.current.stateRef.current.time_warp = timeWarpRef.current;
         }
-        const frame = sim.step();
-        if (frame && sim.stateRef.current) {
+        const frame = simRef.current.step();
+        if (frame && simRef.current.stateRef.current) {
           latestTheta = frame.theta;
           latestPhi   = frame.phi;
-          latestMass  = sim.stateRef.current.mass;
-          latestSpin  = sim.stateRef.current.spin;
+          latestMass  = simRef.current.stateRef.current.mass;
+          latestSpin  = simRef.current.stateRef.current.spin;
 
           if (frame.inside_horizon) {
             const depth = Math.max(0, Math.min(1, 1 - frame.r / 2));
@@ -136,20 +169,27 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
         }
       }
 
-      // Update camera (responds to distance slider live)
+      // Camera position
       const r           = camDistanceRef.current;
       const renderTheta = latestTheta - CAM_THETA_ELEVATION;
       const [cx, cy, cz] = blToCartesian(r, renderTheta, latestPhi);
       camera.position.set(cx, cy, cz);
       const [ux, uy, uz] = cameraUp(renderTheta, latestPhi);
-      camera.up.set(ux, uy, uz);
-      camera.lookAt(0, 0, 0);
-      camera.updateMatrixWorld();
 
-      const camFwd   = camera.position.clone().negate().normalize();
-      const camRight = new THREE.Vector3()
-        .crossVectors(camFwd, camera.up)
-        .normalize();
+      // Natural basis (looking toward BH)
+      const naturalFwd   = camera.position.clone().negate().normalize();
+      const naturalUp    = new THREE.Vector3(ux, uy, uz);
+      const naturalRight = new THREE.Vector3().crossVectors(naturalFwd, naturalUp).normalize();
+
+      // Apply FPS yaw/pitch via quaternions
+      const qYaw     = new THREE.Quaternion().setFromAxisAngle(naturalUp, yaw);
+      const rotRight = naturalRight.clone().applyQuaternion(qYaw);
+      const qPitch   = new THREE.Quaternion().setFromAxisAngle(rotRight, pitch);
+      const q        = new THREE.Quaternion().multiplyQuaternions(qPitch, qYaw);
+
+      const camFwd   = naturalFwd.clone().applyQuaternion(q);
+      const camUp    = naturalUp.clone().applyQuaternion(q);
+      const camRight = naturalRight.clone().applyQuaternion(q);
 
       updateLensingUniforms(lensUniforms, {
         mass:        latestMass,
@@ -158,8 +198,8 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
         cam_theta:   renderTheta,
         cam_phi:     latestPhi,
         cam_right:   [camRight.x, camRight.y, camRight.z],
-        cam_up_vec:  [camera.up.x, camera.up.y, camera.up.z],
-        cam_forward: [camFwd.x, camFwd.y, camFwd.z],
+        cam_up_vec:  [camUp.x,    camUp.y,    camUp.z],
+        cam_forward: [camFwd.x,   camFwd.y,   camFwd.z],
         resolution:  [mount!.clientWidth, mount!.clientHeight],
       });
       lensUniforms.u_frame.value = frameCount++;
@@ -172,11 +212,26 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
     return () => {
       cancelAnimationFrame(rafId);
       window.removeEventListener('resize', onResize);
+      canvas.removeEventListener('click', requestLock);
+      mount.removeEventListener('click', requestLock);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('pointerlockchange', onPointerLockChange);
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
       composer.dispose();
       renderer.dispose();
       mount.removeChild(renderer.domElement);
     };
-  }, [sim, timeWarpRef]);
+  }, []);
 
-  return <div ref={mountRef} className="absolute inset-0" />;
+  return (
+    <div ref={mountRef} className="absolute inset-0 cursor-crosshair">
+      {!locked && (
+        <div className="pointer-events-none absolute inset-0 flex items-end justify-center pb-6">
+          <span className="rounded border border-white/20 bg-black/60 px-4 py-1.5 text-sm text-white/70">
+            Click to look around &nbsp;·&nbsp; ESC to release
+          </span>
+        </div>
+      )}
+    </div>
+  );
 }
