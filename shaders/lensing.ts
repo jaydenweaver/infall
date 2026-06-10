@@ -40,8 +40,13 @@ export const LENS_FRAG = /* glsl */`
   uniform float u_fov_tan;
   uniform float u_spin;
   uniform float u_frame;
+  uniform vec3  u_cam_offset;
 
   varying vec2 vUv;
+
+  // Disk tilt: 30° around the x-axis  (cos/sin precomputed)
+  const float DISK_TC=0.866025;  // cos(30°)
+  const float DISK_TS=0.500000;  // sin(30°)
 
   const int STEPS = 600;
 
@@ -178,50 +183,32 @@ export const LENS_FRAG = /* glsl */`
   }
 
   // ── Accretion disk colour at an equatorial crossing ───────────────────────
-  // Coord system: rotation axis = y, equatorial plane = y=0
-  // r_disk = distance from rotation axis = length(xz)
   vec3 diskColor(vec3 hit, float imgOrder){
     float rInner=u_r_inner*u_mass;
     float rOuter=u_r_outer*u_mass;
-    float r_disk=length(hit.xz);
+    vec3  d_ax2=vec3(0.0,-DISK_TS,DISK_TC);
+    float r_disk=length(vec2(hit.x,dot(hit,d_ax2)));
     if(r_disk<rInner||r_disk>rOuter) return vec3(0.0);
 
-    // Novikov-Thorne temperature profile (same formula as repo)
     float pageThorn=max(0.0,1.0-sqrt(rInner/r_disk));
-    float temp=1.8e5*pow(rInner/r_disk,2.0)*sqrt(pageThorn);
+    float temp=1.2e5*pow(rInner/r_disk,1.5)*sqrt(pageThorn);
 
-    // Keplerian Doppler shift + relativistic beaming
-    float phi_d=atan(hit.z,hit.x);
-    vec3  orb=vec3(-sin(phi_d),0.0,cos(phi_d));
+    float phi_d=atan(dot(hit,d_ax2),hit.x);
+    vec3  orb=normalize(-sin(phi_d)*vec3(1.0,0.0,0.0)+cos(phi_d)*d_ax2);
     float v_kep=clamp(sqrt(u_mass/max(r_disk,0.1)),0.0,0.9);
     float st=sin(u_cam_theta),ct=cos(u_cam_theta),sp=sin(u_cam_phi),cp=cos(u_cam_phi);
     vec3  camP=vec3(u_cam_r*st*cp,u_cam_r*ct,u_cam_r*st*sp);
-    // beta > 0 when orbital motion aims toward observer → blueshift (D > 1)
     float beta=v_kep*dot(orb,normalize(camP-hit));
     float gam=1.0/sqrt(max(1.0-v_kep*v_kep,1e-6));
     float doppler=clamp(1.0/(gam*(1.0-beta)),0.05,8.0);
     temp*=doppler;
-    // Relativistic beaming: approaching side appears dramatically brighter (D^3 factor)
     float beaming=pow(doppler,3.0);
 
-    // Azimuthally-elongated turbulence (Interstellar / Gargantua style).
-    //
-    // Key: radial axis (logR) gets a HIGH scale  → fast variation → thin bands.
-    //      azimuthal axes (cosφ, sinφ) get a LOW scale → slow variation → long streaks.
-    //
-    // Using 3-D FBM with coords (cosφ * az, logR * rad, sinφ * az) separates
-    // the two directions cleanly and avoids any atan wrap discontinuity.
-    float logR = log(max(r_disk / rInner, 0.001));
-    vec3 noiseCoord = vec3(
-        hit.x / r_disk * 1.5,   // cosφ — low azimuthal scale → long streaks
-        logR   * 7.0,            // logR  — high radial scale  → thin concentric bands
-        hit.z / r_disk * 1.5    // sinφ — low azimuthal scale → long streaks
-    );
-    float turb = 0.35 + 0.65 * fbm3(noiseCoord);
+    float logR=log(max(r_disk/rInner,0.001));
+    vec3 noiseCoord=vec3(hit.x/r_disk*1.5,logR*7.0,hit.z/r_disk*1.5);
+    float turb=0.35+0.65*fbm3(noiseCoord);
 
     float fade=1.0-smoothstep(0.6,1.0,(r_disk-rInner)/(rOuter-rInner));
-
-    // Secondary images are dimmer
     float dim=imgOrder<0.5?1.0:0.30;
 
     return blackbody(temp)*turb*fade*pageThorn*4.0*dim*beaming;
@@ -240,7 +227,7 @@ export const LENS_FRAG = /* glsl */`
     // ── Camera position in Cartesian geometric units (y-up) ──────────────
     float sinT=sin(u_cam_theta),cosT=cos(u_cam_theta);
     float sinP=sin(u_cam_phi),  cosP=cos(u_cam_phi);
-    vec3 p=vec3(u_cam_r*sinT*cosP, u_cam_r*cosT, u_cam_r*sinT*sinP);
+    vec3 p=vec3(u_cam_r*sinT*cosP, u_cam_r*cosT, u_cam_r*sinT*sinP)+u_cam_offset;
 
     // ── Ray direction from camera basis ───────────────────────────────────
     vec3 v=normalize(
@@ -304,21 +291,20 @@ export const LENS_FRAG = /* glsl */`
       v+=0.5*(accel+accel2)*dt;
       v=normalize(v);   // keep unit direction (null-ray constraint)
 
-      // ── Equatorial plane crossing (y=0) → sample disk ─────────────────
-      if(crossings<3 && p_prev.y*p.y<0.0){
-        float t=abs(p_prev.y)/(abs(p_prev.y)+abs(p.y));
+      // ── Tilted disk plane crossing → sample disk ──────────────────────
+      float dN_prev=DISK_TC*p_prev.y+DISK_TS*p_prev.z;
+      float dN     =DISK_TC*p.y     +DISK_TS*p.z;
+      if(crossings<3&&dN_prev*dN<0.0){
+        float t=abs(dN_prev)/(abs(dN_prev)+abs(dN));
         vec3  hp=mix(p_prev,p,t);
-
-        vec3  col=diskColor(hp, imgOrder);
+        vec3  col=diskColor(hp,imgOrder);
         float bri=length(col);
         if(bri>1e-5){
           float w=1.0-diskAlpha;
           diskAccum+=col*w;
-          diskAlpha=min(diskAlpha+min(bri,0.9)*w, 0.99);
-        }
+          diskAlpha=min(diskAlpha+min(bri,0.9)*w,0.99);}
         imgOrder+=1.0;
-        crossings++;
-      }
+        crossings++;}
     }
 
     // Lensing deflection on non-jittered ray → stable star sampling
@@ -338,6 +324,7 @@ export interface LensingUniformData {
   cam_right:   [number, number, number];
   cam_up_vec:  [number, number, number];
   cam_forward: [number, number, number];
+  cam_offset:  [number, number, number];
   resolution:  [number, number];
 }
 
@@ -362,6 +349,7 @@ export function createLensingUniforms(
     u_cam_right:   { value: data.cam_right },
     u_cam_up_vec:  { value: data.cam_up_vec },
     u_cam_forward: { value: data.cam_forward },
+    u_cam_offset:  { value: data.cam_offset },
     u_fov_tan:     { value: 1.0 },
     u_spin:        { value: data.spin },
     u_frame:       { value: 0.0 },
@@ -382,5 +370,6 @@ export function updateLensingUniforms(
   uniforms.u_cam_right.value   = data.cam_right;
   uniforms.u_cam_up_vec.value  = data.cam_up_vec;
   uniforms.u_cam_forward.value = data.cam_forward;
+  uniforms.u_cam_offset.value  = data.cam_offset;
   uniforms.u_resolution.value  = data.resolution;
 }
