@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { ShaderPass }     from 'three/examples/jsm/postprocessing/ShaderPass.js';
@@ -17,10 +17,11 @@ import {
   type LensingUniforms,
 } from '@/shaders/lensing';
 
-const DISK_INNER_M        = 6.0;
+const DISK_INNER_M        = 5.0;
 const DISK_OUTER_M        = 22.0;
 const CAM_THETA_ELEVATION = 0.2;
-const MOUSE_SENSITIVITY   = 0.0015;
+const DRAG_SENSITIVITY    = 0.005;
+const SCROLL_SENSITIVITY  = 0.05;
 
 interface Props {
   sim: SimControls;
@@ -35,8 +36,6 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
   runningRef.current = running;
   const simRef = useRef(sim);
   simRef.current = sim;
-
-  const [locked, setLocked] = useState(false);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -80,6 +79,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
           cam_right:   [initRight.x, initRight.y, initRight.z],
           cam_up_vec:  [initUp.x,    initUp.y,    initUp.z],
           cam_forward: [initFwd.x,   initFwd.y,   initFwd.z],
+          cam_offset:  [0, 0, 0],
           resolution:  [mount.clientWidth, mount.clientHeight],
         },
         DISK_INNER_M,
@@ -96,40 +96,76 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
     const composer = new EffectComposer(renderer);
     composer.addPass(lensingPass);
 
-    // ── Mouse look (pointer lock) ─────────────────────────────────────────────
-    let yawTarget   = 0;
-    let pitchTarget = 0;
-    let yaw         = 0;
-    let pitch       = 0;
-    const SMOOTH    = 0.05;
-    const canvas = renderer.domElement;
+    // ── Orbit drag ────────────────────────────────────────────────────────────
+    let camElevation    = CAM_THETA_ELEVATION;
+    let camPhiOffset    = Math.PI / 2;
+    let targetElevation = CAM_THETA_ELEVATION;
+    let targetPhiOffset = Math.PI / 2;
+    let dragging        = false;
+    let lastX           = 0;
+    let lastY           = 0;
 
+    // ── Free-look offsets (pointer-lock mode) ─────────────────────────────────
+    let lookYaw         = 0;
+    let lookPitch       = 0;
+    let targetLookYaw   = 0;
+    let targetLookPitch = 0;
+
+    function onMouseDown(e: MouseEvent) {
+      if (e.button !== 0) return;
+      dragging = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+    }
     function onMouseMove(e: MouseEvent) {
-      if (document.pointerLockElement !== canvas) return;
-      yawTarget   -= e.movementX * MOUSE_SENSITIVITY;
-      pitchTarget -= e.movementY * MOUSE_SENSITIVITY;
-      pitchTarget  = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitchTarget));
+      if (document.pointerLockElement === mount) {
+        targetLookYaw   -= e.movementX * DRAG_SENSITIVITY;
+        targetLookPitch -= e.movementY * DRAG_SENSITIVITY;
+        return;
+      }
+      if (!dragging) return;
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      targetPhiOffset -= dx * DRAG_SENSITIVITY;
+      targetElevation += dy * DRAG_SENSITIVITY;
     }
+    function onMouseUp() { dragging = false; }
 
+    // ── Space bar — toggle pointer-lock look mode ─────────────────────────────
     function onPointerLockChange() {
-      setLocked(document.pointerLockElement === canvas);
+      if (document.pointerLockElement !== mount) {
+        // Wrap to [-π, π] so the lerp back to 0 takes the shortest path
+        lookYaw   = lookYaw   - Math.round(lookYaw   / (Math.PI * 2)) * Math.PI * 2;
+        lookPitch = lookPitch - Math.round(lookPitch / (Math.PI * 2)) * Math.PI * 2;
+        targetLookYaw   = 0;
+        targetLookPitch = 0;
+      }
     }
-
-    function requestLock() {
-      if (document.pointerLockElement !== canvas) {
-        // requestPointerLock returns a Promise in modern browsers
-        const result = canvas.requestPointerLock();
-        if (result instanceof Promise) {
-          result.catch(() => {/* denied — ignore */});
-        }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.code !== 'Space') return;
+      e.preventDefault();
+      if (document.pointerLockElement === mount) {
+        document.exitPointerLock();
+      } else {
+        mount.requestPointerLock();
       }
     }
 
-    // Listen on both canvas and mount so the full div area is clickable
-    canvas.addEventListener('click', requestLock);
-    mount.addEventListener('click', requestLock);
+    // ── Scroll distance ───────────────────────────────────────────────────────
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      const next = camDistanceRef.current * (1 + e.deltaY * SCROLL_SENSITIVITY * 0.01);
+      camDistanceRef.current = Math.max(6, Math.min(50, next));
+    }
+
+    mount.addEventListener('mousedown',  onMouseDown);
     document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup',   onMouseUp);
+    document.addEventListener('keydown',   onKeyDown);
     document.addEventListener('pointerlockchange', onPointerLockChange);
+    mount.addEventListener('wheel', onWheel, { passive: false });
 
     // ── Resize handler ────────────────────────────────────────────────────────
     function onResize() {
@@ -150,6 +186,14 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
 
     function animate() {
       rafId = requestAnimationFrame(animate);
+
+      // Smooth camera orbit
+      camPhiOffset += (targetPhiOffset - camPhiOffset) * 0.12;
+      camElevation += (targetElevation - camElevation) * 0.12;
+
+      // Smooth free-look
+      lookYaw   += (targetLookYaw   - lookYaw)   * 0.05;
+      lookPitch += (targetLookPitch - lookPitch) * 0.05;
 
       // Advance simulation
       if (runningRef.current) {
@@ -174,39 +218,34 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
 
       // Camera position
       const r           = camDistanceRef.current;
-      const renderTheta = latestTheta - CAM_THETA_ELEVATION;
-      const [cx, cy, cz] = blToCartesian(r, renderTheta, latestPhi);
+      const renderTheta = Math.max(0.05, Math.min(Math.PI - 0.05, latestTheta - camElevation));
+      const renderPhi   = latestPhi + camPhiOffset;
+      const [cx, cy, cz] = blToCartesian(r, renderTheta, renderPhi);
       camera.position.set(cx, cy, cz);
-      const [ux, uy, uz] = cameraUp(renderTheta, latestPhi);
+      const [ux, uy, uz] = cameraUp(renderTheta, renderPhi);
 
-      // Smooth mouse look
-      yaw   += (yawTarget   - yaw)   * SMOOTH;
-      pitch += (pitchTarget - pitch) * SMOOTH;
-
-      // Natural basis (looking toward BH)
-      const naturalFwd   = camera.position.clone().negate().normalize();
-      const naturalUp    = new THREE.Vector3(ux, uy, uz);
-      const naturalRight = new THREE.Vector3().crossVectors(naturalFwd, naturalUp).normalize();
-
-      // Apply FPS yaw/pitch via quaternions
-      const qYaw     = new THREE.Quaternion().setFromAxisAngle(naturalUp, yaw);
-      const rotRight = naturalRight.clone().applyQuaternion(qYaw);
-      const qPitch   = new THREE.Quaternion().setFromAxisAngle(rotRight, pitch);
-      const q        = new THREE.Quaternion().multiplyQuaternions(qPitch, qYaw);
-
-      const camFwd   = naturalFwd.clone().applyQuaternion(q);
-      const camUp    = naturalUp.clone().applyQuaternion(q);
-      const camRight = naturalRight.clone().applyQuaternion(q);
+      // Camera basis — apply free-look yaw/pitch on top of toward-BH direction
+      const baseFwd   = new THREE.Vector3(cx, cy, cz).negate().normalize();
+      const baseUp    = new THREE.Vector3(ux, uy, uz);
+      const baseRight = new THREE.Vector3().crossVectors(baseFwd, baseUp).normalize();
+      const yawQ      = new THREE.Quaternion().setFromAxisAngle(baseUp,    lookYaw);
+      const camFwd    = baseFwd.clone().applyQuaternion(yawQ);
+      const afterYawRight = new THREE.Vector3().crossVectors(camFwd, baseUp).normalize();
+      const pitchQ    = new THREE.Quaternion().setFromAxisAngle(afterYawRight, lookPitch);
+      camFwd.applyQuaternion(pitchQ).normalize();
+      const camRight  = new THREE.Vector3().crossVectors(camFwd, baseUp).normalize();
+      const camUp     = new THREE.Vector3().crossVectors(camRight, camFwd).normalize();
 
       updateLensingUniforms(lensUniforms, {
         mass:        latestMass,
         spin:        latestSpin,
         cam_r:       r,
         cam_theta:   renderTheta,
-        cam_phi:     latestPhi,
+        cam_phi:     renderPhi,
         cam_right:   [camRight.x, camRight.y, camRight.z],
         cam_up_vec:  [camUp.x,    camUp.y,    camUp.z],
         cam_forward: [camFwd.x,   camFwd.y,   camFwd.z],
+        cam_offset:  [0, 0, 0],
         resolution:  [mount!.clientWidth, mount!.clientHeight],
       });
       lensUniforms.u_frame.value = frameCount++;
@@ -219,11 +258,14 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
     return () => {
       cancelAnimationFrame(rafId);
       window.removeEventListener('resize', onResize);
-      canvas.removeEventListener('click', requestLock);
-      mount.removeEventListener('click', requestLock);
+      mount.removeEventListener('mousedown',  onMouseDown);
       document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup',   onMouseUp);
+      document.removeEventListener('keydown',   onKeyDown);
       document.removeEventListener('pointerlockchange', onPointerLockChange);
-      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      mount.removeEventListener('wheel', onWheel);
+      if (document.pointerLockElement === mount) document.exitPointerLock();
+
       composer.dispose();
       renderer.dispose();
       mount.removeChild(renderer.domElement);
@@ -231,14 +273,6 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
   }, []);
 
   return (
-    <div ref={mountRef} className="absolute inset-0 cursor-crosshair">
-      {!locked && (
-        <div className="pointer-events-none absolute inset-0 flex items-end justify-center pb-6">
-          <span className="rounded border border-white/20 bg-black/60 px-4 py-1.5 text-sm text-white/70">
-            Click to look around &nbsp;·&nbsp; ESC to release
-          </span>
-        </div>
-      )}
-    </div>
+    <div ref={mountRef} className="absolute inset-0 cursor-grab active:cursor-grabbing" />
   );
 }
