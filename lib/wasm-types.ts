@@ -73,5 +73,5 @@ export interface BlackHoleParams {
 
 export const DEFAULT_PARAMS: BlackHoleParams = {
   mass: 1.0,
-  spin: 0.0,
+  spin: 0.7,
 };

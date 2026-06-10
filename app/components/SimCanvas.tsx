@@ -58,7 +58,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
     );
     const initialTheta = Math.PI / 2 - CAM_THETA_ELEVATION;
     const initialPhi   = Math.PI / 2;
-    const [icx, icy, icz] = blToCartesian(8, initialTheta, initialPhi);
+    const [icx, icy, icz] = blToCartesian(35, initialTheta, initialPhi);
     camera.position.set(icx, icy, icz);
     const [iux, iuy, iuz] = cameraUp(initialTheta, initialPhi);
     camera.up.set(iux, iuy, iuz);
@@ -73,7 +73,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
         {
           mass:        1.0,
           spin:        0.0,
-          cam_r:       8.0,
+          cam_r:       35.0,
           cam_theta:   initialTheta,
           cam_phi:     initialPhi,
           cam_right:   [initRight.x, initRight.y, initRight.z],
