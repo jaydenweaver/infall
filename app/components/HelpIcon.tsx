@@ -1,0 +1,36 @@
+'use client';
+
+import { useState } from 'react';
+
+const controls = [
+  { key: 'Drag',   desc: 'Orbit camera' },
+  { key: 'Scroll', desc: 'Zoom' },
+  { key: 'Space',  desc: 'Free-look mode' },
+  { key: 'Esc',    desc: 'Exit free-look' },
+];
+
+export default function HelpIcon() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="absolute top-4 right-4 z-20 flex flex-col items-end gap-3">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-7 h-7 flex items-center justify-center rounded-full border border-neutral-700 text-neutral-500 hover:text-white hover:border-neutral-400 transition-colors text-sm"
+      >
+        ?
+      </button>
+
+      {open && (
+        <div className="border border-neutral-800 bg-black/80 px-5 py-4 flex flex-col gap-3">
+          {controls.map(({ key, desc }) => (
+            <div key={key} className="flex items-baseline gap-4 text-sm">
+              <span className="text-neutral-500 w-14 text-right shrink-0">{key}</span>
+              <span className="text-neutral-300">{desc}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
