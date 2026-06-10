@@ -3,13 +3,11 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
-import { RenderPass }     from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass }     from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import type { SimControls } from '@/hooks/useSim';
 import {
   blToCartesian,
   cameraUp,
-  WORLD_SCALE,
 } from '@/lib/coordinates';
 import {
   LENS_VERT,
@@ -19,15 +17,8 @@ import {
   type LensingUniforms,
 } from '@/shaders/lensing';
 
-// Inner edge = Schwarzschild ISCO = 6M.  Extending inside ISCO put extremely
-// hot, over-bright material near the photon sphere, creating garish stripes.
-// Outer edge trimmed to 15M — dim outer disk contributed faint extra rings.
-const DISK_INNER_M  = 6.0;
-const DISK_OUTER_M  = 15.0;
-// Elevation above the equatorial plane (radians).
-// A purely equatorial camera sees an infinitely-thin disk edge-on — direct
-// disk rays never cross the midplane and are invisible to the shader's
-// plane-crossing detector.  A small tilt brings direct disk rays into view.
+const DISK_INNER_M        = 6.0;
+const DISK_OUTER_M        = 22.0;
 const CAM_THETA_ELEVATION = 0.2;
 
 interface Props {
@@ -53,7 +44,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
     renderer.setClearColor(0x000000, 1);
     mount.appendChild(renderer.domElement);
 
-    // ── Scene & Camera ────────────────────────────────────────────────────────
+    // ── Scene / camera (scene is empty — lensing shader draws everything) ────
     const scene  = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(
       90,
@@ -61,73 +52,47 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
       0.1,
       1e6,
     );
-    const [icx, icy, icz] = blToCartesian(8, Math.PI / 2 - CAM_THETA_ELEVATION, Math.PI / 2);
+    const initialTheta = Math.PI / 2 - CAM_THETA_ELEVATION;
+    const initialPhi   = Math.PI / 2;
+    const [icx, icy, icz] = blToCartesian(8, initialTheta, initialPhi);
     camera.position.set(icx, icy, icz);
-    const [iux, iuy, iuz] = cameraUp(Math.PI / 2 - CAM_THETA_ELEVATION, Math.PI / 2);
+    const [iux, iuy, iuz] = cameraUp(initialTheta, initialPhi);
     camera.up.set(iux, iuy, iuz);
     camera.lookAt(0, 0, 0);
 
-    // Stars are drawn procedurally by the lensing shader's starField() function.
-
-    // ── Black hole shadow sphere ───────────────────────────────────────────────
-    // The lensing pass already traces geodesics and produces the correct photon
-    // shadow.  This opaque sphere ensures the shadow area is black even if the
-    // lensing pass is slow to converge on deeply-lensed pixels.
-    const bhMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(2.0 * WORLD_SCALE, 64, 32),
-      new THREE.MeshBasicMaterial({ color: 0x000000 }),
-    );
-    scene.add(bhMesh);
-
-    // ── Post-processing: lensing pass ─────────────────────────────────────────
-    // RenderPass → writes stars + BH sphere to tDiffuse.
-    // LensingPass → traces null geodesics per pixel, warps the background,
-    //               and composites primary + secondary disk images.
-    //
-    // IMPORTANT: ShaderPass clones the uniforms object internally via
-    // THREE.UniformsUtils.clone().  All per-frame updates must target
-    // lensingPass.uniforms (the clone), not the object passed to the constructor.
-    const initialR = 8.0; // M
-    // Camera starts elevated CAM_THETA_ELEVATION radians above the equatorial
-    // plane.  A purely equatorial camera sees the disk edge-on and the primary
-    // disk image is invisible to the plane-crossing detector.
-    const initialTheta = Math.PI / 2 - CAM_THETA_ELEVATION;
-    const initialPhi   = Math.PI / 2; // camera on +Z axis → φ = π/2
-    // Derive initial basis from the camera we already positioned above.
+    // ── Lensing ShaderPass ────────────────────────────────────────────────────
+    // Derives initial camera basis from the camera we positioned above.
     camera.updateMatrixWorld();
-    const initFwdV  = camera.position.clone().negate().normalize();
-    const initUpV   = camera.up.clone().normalize();
-    const initRightV = new THREE.Vector3().crossVectors(initFwdV, initUpV).normalize();
-    const initialFwd:   [number, number, number] = [initFwdV.x,   initFwdV.y,   initFwdV.z];
-    const initialRight: [number, number, number] = [initRightV.x, initRightV.y, initRightV.z];
-    const initialUp:    [number, number, number] = [initUpV.x,    initUpV.y,    initUpV.z];
+    const initFwd   = camera.position.clone().negate().normalize();
+    const initUp    = camera.up.clone().normalize();
+    const initRight = new THREE.Vector3().crossVectors(initFwd, initUp).normalize();
 
     const lensingPass = new ShaderPass({
       uniforms: createLensingUniforms(
         {
           mass:        1.0,
           spin:        0.0,
-          cam_r:       initialR,
+          cam_r:       8.0,
           cam_theta:   initialTheta,
           cam_phi:     initialPhi,
-          cam_right:   initialRight,
-          cam_up_vec:  initialUp,
-          cam_forward: initialFwd,
+          cam_right:   [initRight.x, initRight.y, initRight.z],
+          cam_up_vec:  [initUp.x,    initUp.y,    initUp.z],
+          cam_forward: [initFwd.x,   initFwd.y,   initFwd.z],
           resolution:  [mount.clientWidth, mount.clientHeight],
         },
         DISK_INNER_M,
         DISK_OUTER_M,
-        2.0, // Schwarzschild horizon = 2M for mass=1
+        2.0,
       ),
       vertexShader:   LENS_VERT,
       fragmentShader: LENS_FRAG,
     });
 
-    // lensingPass.uniforms is the clone Three.js made — this is what the GPU reads.
+    // Render directly to screen — no CopyPass needed.
+    lensingPass.renderToScreen = true;
     const lensUniforms = lensingPass.uniforms as LensingUniforms;
 
     const composer = new EffectComposer(renderer);
-    composer.addPass(new RenderPass(scene, camera));
     composer.addPass(lensingPass);
 
     // ── Resize handler ────────────────────────────────────────────────────────
@@ -141,21 +106,16 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
 
     // ── Animation loop ────────────────────────────────────────────────────────
     let rafId: number;
-
-    // Latest orbital angles from the sim — updated each step, read every frame
-    // so the camera stays live even when paused or when only the distance changes.
     let latestTheta = initialTheta;
     let latestPhi   = initialPhi;
     let latestMass  = 1.0;
     let latestSpin  = 0.0;
-
-    // Frame counter for Halton TAA jitter (cycles through 16 sub-pixel positions)
-    let frameCount = 0;
+    let frameCount  = 0;
 
     function animate() {
       rafId = requestAnimationFrame(animate);
 
-      // ── Advance simulation ───────────────────────────────────────────────
+      // Advance simulation
       if (runningRef.current) {
         if (sim.stateRef.current) {
           sim.stateRef.current.time_warp = timeWarpRef.current;
@@ -176,7 +136,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
         }
       }
 
-      // ── Update camera every frame (responds to distance slider live) ─────
+      // Update camera (responds to distance slider live)
       const r           = camDistanceRef.current;
       const renderTheta = latestTheta - CAM_THETA_ELEVATION;
       const [cx, cy, cz] = blToCartesian(r, renderTheta, latestPhi);
