@@ -13,8 +13,6 @@ out/
 !.env.example
 *.tsbuildinfo
 
-# public/wasm-pkg/ is intentionally not ignored (committed for Vercel)
-public/wasm-pkg/
 
 # Misc
 .DS_Store
