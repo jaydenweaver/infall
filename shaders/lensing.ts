@@ -112,31 +112,64 @@ export const LENS_FRAG = /* glsl */`
     return        vec3(1.00,0.60,0.40);         // M    — red
   }
 
-  // ── Procedural starfield (matching repo: large/dim stars + nebula) ────────
+  // ── Procedural starfield ──────────────────────────────────────────────────
+  // Cube-face projection: dominant axis → 2-D face UV → uniform angular density
+  // → round Gaussian PSF stars; no square grid artifacts.
   vec3 starField(vec3 dir){
     dir=normalize(dir);
-    vec3 stars=vec3(0.0);
+    vec3 col=vec3(0.0);
 
-    // Bright rare stars (probability 0.2%)
-    {vec3 c=floor(dir*200.0);float n=hash3(c);
-     if(n>0.998){
-       float bri=pow(n,10.0)*2.5;
-       float bv=hash3(c+127.1)*2.4-0.4;
-       float tw=0.85+0.15*sin(u_frame*0.05*(3.0+hash3(c+73.7)*2.0));
-       stars+=starColor(bv)*bri*tw;}}
+    // ── Milky Way band ────────────────────────────────────────────────────
+    {vec3 gp=normalize(vec3(0.187,0.934,0.302));
+     float band=1.0-abs(dot(dir,gp));
+     float mw=pow(band,3.5)*fbm(dir.xy*3.0+dir.z*1.5)*0.20;
+     col+=vec3(0.55,0.62,0.90)*mw;}
 
-    // Dim numerous stars (probability 0.4%)
-    {vec3 c=floor(dir*500.0);float n=hash3(c);
-     if(n>0.996){
-       float bri=pow(n,20.0)*1.5;
-       float bv=hash3(c+217.3)*2.4-0.4;
-       stars+=starColor(bv)*bri;}}
+    // ── Nebulae ───────────────────────────────────────────────────────────
+    {float e=fbm3(dir*2.7+vec3(3.1,0.7,1.4))*fbm3(dir*1.3+vec3(0.2,2.8,0.6));
+     if(e>0.28)col+=vec3(0.90,0.12,0.18)*pow(e-0.28,1.8)*0.5;   // H-alpha red
+     float rf=fbm3(dir*2.1+vec3(1.5,3.3,0.9))*fbm3(dir*0.9+vec3(2.2,0.4,3.7));
+     if(rf>0.30)col+=vec3(0.18,0.35,0.90)*pow(rf-0.30,2.0)*0.3; // reflection blue
+     float o=fbm3(dir*3.5+vec3(0.8,1.6,3.0))*fbm3(dir*1.7+vec3(3.4,2.1,0.5));
+     if(o>0.32)col+=vec3(0.10,0.80,0.75)*pow(o-0.32,2.2)*0.2;}  // OIII teal
 
-    // Subtle nebula glow
-    float neb=fbm(dir.xy*1.5+dir.z*0.7)*0.04;
-    stars+=vec3(0.15,0.22,0.50)*neb;
+    // ── Cube-face UV ──────────────────────────────────────────────────────
+    vec3 ad=abs(dir);
+    vec2 uv;float face;
+    if(ad.x>=ad.y&&ad.x>=ad.z){uv=dir.yz/ad.x;face=sign(dir.x);}
+    else if(ad.y>=ad.z)        {uv=dir.xz/ad.y;face=sign(dir.y)+2.0;}
+    else                       {uv=dir.xy/ad.z;face=sign(dir.z)+5.0;}
 
-    return clamp(stars,0.0,4.0);
+    // Layer A — bright/rare stars  (dv in grid-cell units, sz ~0.3 cells → tight dot)
+    {float G=28.0;vec2 gc=floor(uv*G);
+     for(int dx=0;dx<3;dx++)for(int dy=0;dy<3;dy++){
+       vec2 nc=gc+vec2(float(dx)-1.0,float(dy)-1.0);
+       float n=hash2(nc*31.7+vec2(face*17.3,face*91.1));
+       if(n>0.95){
+         vec2 sp=nc+vec2(hash2(nc+7.3),hash2(nc+13.7));
+         vec2 dv=uv*G-sp;                           // grid-cell units
+         float bv=hash2(nc+41.1)*2.4-0.4;
+         float sz=0.05+hash2(nc+99.0)*0.01;         // 0.06–0.08 cells
+         float g=exp(-dot(dv,dv)/(sz*sz));
+         float bri=0.6+hash2(nc+123.0)*1.4;
+         float tw=0.85+0.15*sin(u_frame*0.05*(3.0+hash2(nc+73.7)*2.0));
+         col+=starColor(bv)*bri*g*tw;}}}
+
+    // Layer B — faint/numerous stars
+    {float G=68.0;vec2 gc=floor(uv*G);
+     for(int dx=0;dx<3;dx++)for(int dy=0;dy<3;dy++){
+       vec2 nc=gc+vec2(float(dx)-1.0,float(dy)-1.0);
+       float n=hash2(nc*53.1+vec2(face*29.7,face*67.3));
+       if(n>0.87){
+         vec2 sp=nc+vec2(hash2(nc+17.1),hash2(nc+23.9));
+         vec2 dv=uv*G-sp;                           // grid-cell units
+         float bv=hash2(nc+55.3)*2.4-0.4;
+         float sz=0.05+hash2(nc+83.0)*0.01;         // 0.05–0.06 cells
+         float g=exp(-dot(dv,dv)/(sz*sz));
+         float bri=0.15+hash2(nc+144.0)*0.35;
+         col+=starColor(bv)*bri*g;}}}
+
+    return clamp(col,0.0,6.0);
   }
 
   // ── Accretion disk colour at an equatorial crossing ───────────────────────
