@@ -97,15 +97,18 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
     composer.addPass(lensingPass);
 
     // ── Mouse look (pointer lock) ─────────────────────────────────────────────
-    let yaw   = 0;
-    let pitch = 0;
+    let yawTarget   = 0;
+    let pitchTarget = 0;
+    let yaw         = 0;
+    let pitch       = 0;
+    const SMOOTH    = 0.05;   // lerp factor per frame (lower = smoother)
     const canvas = renderer.domElement;
 
     function onMouseMove(e: MouseEvent) {
       if (document.pointerLockElement !== canvas) return;
-      yaw   -= e.movementX * MOUSE_SENSITIVITY;
-      pitch -= e.movementY * MOUSE_SENSITIVITY;
-      pitch  = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
+      yawTarget   -= e.movementX * MOUSE_SENSITIVITY;
+      pitchTarget -= e.movementY * MOUSE_SENSITIVITY;
+      pitchTarget  = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitchTarget));
     }
 
     function onPointerLockChange() {
@@ -175,6 +178,10 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
       const [cx, cy, cz] = blToCartesian(r, renderTheta, latestPhi);
       camera.position.set(cx, cy, cz);
       const [ux, uy, uz] = cameraUp(renderTheta, latestPhi);
+
+      // Smooth mouse look
+      yaw   += (yawTarget   - yaw)   * SMOOTH;
+      pitch += (pitchTarget - pitch) * SMOOTH;
 
       // Natural basis (looking toward BH)
       const naturalFwd   = camera.position.clone().negate().normalize();

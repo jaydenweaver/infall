@@ -265,11 +265,25 @@ export const LENS_FRAG = /* glsl */`
       // Factor k=3: circular null orbit at r=kM=3M (Schwarzschild photon sphere).
       vec3 accel=-normalize(p)*(3.0*u_mass/(r*r));
 
+      // Gravitomagnetic (Lense-Thirring) frame-dragging: a_drag = v × B_g
+      // B_g = (2/r³)(3(J·r̂)r̂ − J),  J = a·M ŷ  (spin axis = y)
+      {float a=u_spin*u_mass;
+       vec3 J=vec3(0.0,a,0.0);
+       vec3 rhat=normalize(p);
+       vec3 Bg=(2.0/(r*r*r))*(3.0*dot(J,rhat)*rhat-J);
+       accel+=cross(v,Bg);}
+
       // Velocity Verlet
       p+=v*dt+0.5*accel*dt*dt;
 
       float r2=length(p);
       vec3 accel2=-normalize(p)*(3.0*u_mass/(r2*r2));
+      // Frame-drag at new position
+      {float a=u_spin*u_mass;
+       vec3 J=vec3(0.0,a,0.0);
+       vec3 rhat2=normalize(p);
+       vec3 Bg2=(2.0/(r2*r2*r2))*(3.0*dot(J,rhat2)*rhat2-J);
+       accel2+=cross(v,Bg2);}
       v+=0.5*(accel+accel2)*dt;
       v=normalize(v);   // keep unit direction (null-ray constraint)
 
