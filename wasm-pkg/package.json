@@ -1,0 +1,19 @@
+{
+  "name": "infall-wasm",
+  "type": "module",
+  "description": "Kerr black hole geodesic integrator compiled to WASM",
+  "version": "0.1.0",
+  "license": "MIT",
+  "files": [
+    "infall_wasm_bg.wasm",
+    "infall_wasm.js",
+    "infall_wasm_bg.js",
+    "infall_wasm.d.ts"
+  ],
+  "main": "infall_wasm.js",
+  "types": "infall_wasm.d.ts",
+  "sideEffects": [
+    "./infall_wasm.js",
+    "./snippets/*"
+  ]
+}
