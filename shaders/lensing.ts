@@ -149,11 +149,13 @@ export const LENS_FRAG = /* glsl */`
          vec2 sp=nc+vec2(hash2(nc+7.3),hash2(nc+13.7));
          vec2 dv=uv*G-sp;                           // grid-cell units
          float bv=hash2(nc+41.1)*2.4-0.4;
-         float sz=0.05+hash2(nc+99.0)*0.01;         // 0.06–0.08 cells
+         float sz=0.07+hash2(nc+99.0)*0.01;         // 0.07–0.08 cells
          float g=exp(-dot(dv,dv)/(sz*sz));
          float bri=0.6+hash2(nc+123.0)*1.4;
          float tw=0.85+0.15*sin(u_frame*0.05*(3.0+hash2(nc+73.7)*2.0));
-         col+=starColor(bv)*bri*g*tw;}}}
+         float szH=sz*6.0;
+         float gH=exp(-dot(dv,dv)/(szH*szH));
+         col+=starColor(bv)*bri*(g+gH*0.04)*tw;}}}
 
     // Layer B — faint/numerous stars
     {float G=68.0;vec2 gc=floor(uv*G);
@@ -162,9 +164,9 @@ export const LENS_FRAG = /* glsl */`
        float n=hash2(nc*53.1+vec2(face*29.7,face*67.3));
        if(n>0.87){
          vec2 sp=nc+vec2(hash2(nc+17.1),hash2(nc+23.9));
-         vec2 dv=uv*G-sp;                           // grid-cell units
+         vec2 dv=uv*G-sp;
          float bv=hash2(nc+55.3)*2.4-0.4;
-         float sz=0.05+hash2(nc+83.0)*0.01;         // 0.05–0.06 cells
+         float sz=0.15+hash2(nc+83.0)*0.01;         // 0.13–0.14 cells
          float g=exp(-dot(dv,dv)/(sz*sz));
          float bri=0.15+hash2(nc+144.0)*0.35;
          col+=starColor(bv)*bri*g;}}}
@@ -224,8 +226,9 @@ export const LENS_FRAG = /* glsl */`
 
     // Sub-pixel Halton jitter
     float fn=mod(u_frame,16.0)+1.0;
-    vec2 ndc=vUv*2.0-1.0
-            +vec2(halton(fn,2.0)-0.5,halton(fn,3.0)-0.5)/u_resolution*2.0;
+    vec2 jitter=vec2(halton(fn,2.0)-0.5,halton(fn,3.0)-0.5)/u_resolution*2.0;
+    vec2 ndc=vUv*2.0-1.0+jitter;
+    vec2 ndc0=vUv*2.0-1.0;          // non-jittered — used for stable starfield
 
     // ── Camera position in Cartesian geometric units (y-up) ──────────────
     float sinT=sin(u_cam_theta),cosT=cos(u_cam_theta);
@@ -237,6 +240,13 @@ export const LENS_FRAG = /* glsl */`
       u_cam_forward
       +ndc.x*u_fov_tan*aspect*u_cam_right
       +ndc.y*u_fov_tan*u_cam_up_vec
+    );
+    vec3 v_init=v;   // save jittered initial direction
+    // Non-jittered initial direction for starfield
+    vec3 v0=normalize(
+      u_cam_forward
+      +ndc0.x*u_fov_tan*aspect*u_cam_right
+      +ndc0.y*u_fov_tan*u_cam_up_vec
     );
 
     vec3  diskAccum=vec3(0.0);
@@ -304,7 +314,9 @@ export const LENS_FRAG = /* glsl */`
       }
     }
 
-    gl_FragColor=vec4(aces(starField(v)+diskAccum),1.0);
+    // Lensing deflection on non-jittered ray → stable star sampling
+    vec3 v_stars=normalize(v0+(v-v_init));
+    gl_FragColor=vec4(aces(starField(v_stars)+diskAccum),1.0);
   }
 `;
 
