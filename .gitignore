@@ -13,8 +13,7 @@ out/
 !.env.example
 *.tsbuildinfo
 
-# WASM build artifacts — rebuild with `npm run build:wasm`
-wasm-pkg/
+# public/wasm-pkg/ is intentionally not ignored (committed for Vercel)
 public/wasm-pkg/
 
 # Misc
