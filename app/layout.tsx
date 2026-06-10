@@ -5,8 +5,8 @@ import './globals.css';
 const garamond = EB_Garamond({ subsets: ['latin'], weight: ['400', '500'] });
 
 export const metadata: Metadata = {
-  title: 'Infall — Kerr Black Hole Simulator',
-  description: 'First-person geodesic infall into a rotating black hole.',
+  title: 'infall',
+  description: 'Kerr black hole simulation.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
