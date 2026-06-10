@@ -46,7 +46,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef, f
 
     // ── Renderer ──────────────────────────────────────────────────────────────
     const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(mount.clientWidth, mount.clientHeight);
     renderer.setClearColor(0x000000, 1);
     mount.appendChild(renderer.domElement);
