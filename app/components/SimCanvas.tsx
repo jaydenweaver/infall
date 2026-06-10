@@ -288,7 +288,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
 
       // Camera position
       const r           = camDistanceRef.current;
-      const renderTheta = Math.max(0.05, Math.min(Math.PI - 0.05, latestTheta - camElevation));
+      const renderTheta = Math.max(0.05, Math.min(Math.PI - 0.05, Math.PI / 2 - camElevation));
       const renderPhi   = latestPhi + camPhiOffset;
       const [cx, cy, cz] = blToCartesian(r, renderTheta, renderPhi);
       camera.position.set(cx, cy, cz);
