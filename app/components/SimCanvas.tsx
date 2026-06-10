@@ -169,12 +169,52 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
       camDistanceRef.current = Math.max(6, Math.min(50, next));
     }
 
+    // ── Touch controls ────────────────────────────────────────────────────────
+    let lastPinchDist = 0;
+
+    function onTouchStart(e: TouchEvent) {
+      e.preventDefault();
+      if (e.touches.length === 1) {
+        dragging = true;
+        lastX = e.touches[0].clientX;
+        lastY = e.touches[0].clientY;
+      } else if (e.touches.length === 2) {
+        dragging = false;
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        lastPinchDist = Math.hypot(dx, dy);
+      }
+    }
+    function onTouchMove(e: TouchEvent) {
+      e.preventDefault();
+      if (e.touches.length === 1 && dragging) {
+        const dx = e.touches[0].clientX - lastX;
+        const dy = e.touches[0].clientY - lastY;
+        lastX = e.touches[0].clientX;
+        lastY = e.touches[0].clientY;
+        targetPhiOffset -= dx * DRAG_SENSITIVITY;
+        targetElevation += dy * DRAG_SENSITIVITY;
+      } else if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.hypot(dx, dy);
+        const delta = lastPinchDist - dist;
+        const next = camDistanceRef.current * (1 + delta * SCROLL_SENSITIVITY * 0.01);
+        camDistanceRef.current = Math.max(6, Math.min(50, next));
+        lastPinchDist = dist;
+      }
+    }
+    function onTouchEnd() { dragging = false; }
+
     mount.addEventListener('mousedown',  onMouseDown);
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup',   onMouseUp);
     document.addEventListener('keydown',   onKeyDown);
     document.addEventListener('pointerlockchange', onPointerLockChange);
     mount.addEventListener('wheel', onWheel, { passive: false });
+    mount.addEventListener('touchstart', onTouchStart, { passive: false });
+    mount.addEventListener('touchmove',  onTouchMove,  { passive: false });
+    mount.addEventListener('touchend',   onTouchEnd);
 
     // ── Resize handler ────────────────────────────────────────────────────────
     function onResize() {
@@ -273,6 +313,9 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
       document.removeEventListener('keydown',   onKeyDown);
       document.removeEventListener('pointerlockchange', onPointerLockChange);
       mount.removeEventListener('wheel', onWheel);
+      mount.removeEventListener('touchstart', onTouchStart);
+      mount.removeEventListener('touchmove',  onTouchMove);
+      mount.removeEventListener('touchend',   onTouchEnd);
       if (document.pointerLockElement === mount) document.exitPointerLock();
 
       composer.dispose();
