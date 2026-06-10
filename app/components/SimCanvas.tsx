@@ -227,22 +227,30 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
 
     // ── Animation loop ────────────────────────────────────────────────────────
     let rafId: number;
-    let latestTheta = initialTheta;
-    let latestPhi   = initialPhi;
-    let latestMass  = 1.0;
-    let latestSpin  = 0.0;
-    let frameCount  = 0;
+    let latestTheta   = initialTheta;
+    let latestPhi     = initialPhi;
+    let latestMass    = 1.0;
+    let latestSpin    = 0.0;
+    let frameCount    = 0;
+    let lastFrameTime = performance.now();
 
     function animate() {
       rafId = requestAnimationFrame(animate);
 
+      // Frame-rate-independent lerp factors
+      const now = performance.now();
+      const dt  = Math.min((now - lastFrameTime) / 16.667, 4);
+      lastFrameTime = now;
+      const orbitLerp = 1 - Math.pow(0.88, dt);
+      const lookLerp  = 1 - Math.pow(0.95, dt);
+
       // Smooth camera orbit
-      camPhiOffset += (targetPhiOffset - camPhiOffset) * 0.12;
-      camElevation += (targetElevation - camElevation) * 0.12;
+      camPhiOffset += (targetPhiOffset - camPhiOffset) * orbitLerp;
+      camElevation += (targetElevation - camElevation) * orbitLerp;
 
       // Smooth free-look
-      lookYaw   += (targetLookYaw   - lookYaw)   * 0.05;
-      lookPitch += (targetLookPitch - lookPitch) * 0.05;
+      lookYaw   += (targetLookYaw   - lookYaw)   * lookLerp;
+      lookPitch += (targetLookPitch - lookPitch) * lookLerp;
 
       // Advance simulation
       if (runningRef.current) {
