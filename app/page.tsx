@@ -5,7 +5,6 @@ import { useWasm } from '@/hooks/useWasm';
 import { useSim } from '@/hooks/useSim';
 import { DEFAULT_PARAMS } from '@/lib/wasm-types';
 import SimCanvas from './components/SimCanvas';
-import HUD from './components/HUD';
 
 export default function Home() {
   const { ready, api, error } = useWasm();
@@ -24,11 +23,6 @@ export default function Home() {
 
       <SimCanvas sim={sim} running={true} timeWarpRef={timeWarpRef} camDistanceRef={camDistanceRef} />
 
-      <HUD
-        snapshot={sim.hudSnapshot}
-        ready={ready}
-        params={DEFAULT_PARAMS}
-      />
     </main>
   );
 }
