@@ -5,8 +5,7 @@ import { useState } from 'react';
 const controls = [
   { key: 'Drag',   desc: 'Orbit camera' },
   { key: 'Scroll', desc: 'Zoom' },
-  { key: 'Space',  desc: 'Free-look mode' },
-  { key: 'Esc',    desc: 'Exit free-look' },
+  { key: 'Space',  desc: 'Toggle free-look' },
 ];
 
 export default function HelpIcon() {
@@ -29,6 +28,12 @@ export default function HelpIcon() {
               <span className="text-neutral-300">{desc}</span>
             </div>
           ))}
+          <a href="https://jaydenw.dev" target="_blank" rel="noopener noreferrer" className="text-white-400 hover:text-gray-300 transition-colors">
+            jaydenw.dev
+          </a>
+          <a href="https://github.com/jaydenweaver/infall" target="_blank" rel="noopener noreferrer" className="text-white-400 hover:text-gray-300 transition-colors">
+            github source
+          </a>
         </div>
       )}
     </div>
