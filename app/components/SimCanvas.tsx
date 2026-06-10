@@ -29,9 +29,10 @@ interface Props {
   running: boolean;
   timeWarpRef: React.MutableRefObject<number>;
   camDistanceRef: React.MutableRefObject<number>;
+  fpsRef: React.MutableRefObject<number>;
 }
 
-export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }: Props) {
+export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef, fpsRef }: Props) {
   const mountRef   = useRef<HTMLDivElement>(null);
   const runningRef = useRef(running);
   runningRef.current = running;
@@ -245,6 +246,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef }:
       const frameMs = now - lastFrameTime;
       lastFrameTime = now;
       avgFrameMs   += (frameMs - avgFrameMs) * 0.1;   // exponential moving avg
+      fpsRef.current = Math.round(1000 / avgFrameMs);
       const dt  = Math.min(frameMs / 16.667, 4);
 
       // Adaptive step count: target 30 fps; scale steps between 150–600

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 const controls = [
   { key: 'Drag',   desc: 'Orbit camera' },
@@ -8,8 +8,19 @@ const controls = [
   { key: 'Space',  desc: 'Toggle free-look' },
 ];
 
-export default function HelpIcon() {
+interface Props {
+  fpsRef: React.MutableRefObject<number>;
+}
+
+export default function HelpIcon({ fpsRef }: Props) {
   const [open, setOpen] = useState(false);
+  const [fps,  setFps]  = useState(0);
+
+  useEffect(() => {
+    if (!open) return;
+    const id = setInterval(() => setFps(fpsRef.current), 500);
+    return () => clearInterval(id);
+  }, [open, fpsRef]);
 
   return (
     <div className="absolute top-4 right-4 z-20 flex flex-col items-end gap-3">
@@ -28,6 +39,10 @@ export default function HelpIcon() {
               <span className="text-neutral-300">{desc}</span>
             </div>
           ))}
+          <div className="flex items-baseline gap-4 text-sm">
+            <span className="text-neutral-500 w-14 text-right shrink-0">FPS</span>
+            <span className="text-neutral-300">{fps}</span>
+          </div>
           <a href="https://jaydenw.dev" target="_blank" rel="noopener noreferrer" className="text-white-400 hover:text-gray-300 transition-colors">
             jaydenw.dev
           </a>

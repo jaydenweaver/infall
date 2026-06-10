@@ -11,6 +11,7 @@ export default function Home() {
   const { ready, api, error } = useWasm();
   const timeWarpRef    = useRef(1);
   const camDistanceRef = useRef(35);
+  const fpsRef         = useRef(0);
 
   const sim = useSim(ready ? api : null, DEFAULT_PARAMS);
 
@@ -22,9 +23,9 @@ export default function Home() {
         </div>
       )}
 
-      <SimCanvas sim={sim} running={true} timeWarpRef={timeWarpRef} camDistanceRef={camDistanceRef} />
+      <SimCanvas sim={sim} running={true} timeWarpRef={timeWarpRef} camDistanceRef={camDistanceRef} fpsRef={fpsRef} />
 
-      <HelpIcon />
+      <HelpIcon fpsRef={fpsRef} />
     </main>
   );
 }
