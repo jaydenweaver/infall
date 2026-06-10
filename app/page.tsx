@@ -12,6 +12,7 @@ export default function Home() {
   const timeWarpRef    = useRef(1);
   const camDistanceRef = useRef(35);
   const fpsRef         = useRef(0);
+  const stepsRef       = useRef(600);
 
   const sim = useSim(ready ? api : null, DEFAULT_PARAMS);
 
@@ -23,9 +24,9 @@ export default function Home() {
         </div>
       )}
 
-      <SimCanvas sim={sim} running={true} timeWarpRef={timeWarpRef} camDistanceRef={camDistanceRef} fpsRef={fpsRef} />
+      <SimCanvas sim={sim} running={true} timeWarpRef={timeWarpRef} camDistanceRef={camDistanceRef} fpsRef={fpsRef} stepsRef={stepsRef} />
 
-      <HelpIcon fpsRef={fpsRef} />
+      <HelpIcon fpsRef={fpsRef} stepsRef={stepsRef} />
     </main>
   );
 }

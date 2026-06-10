@@ -30,9 +30,10 @@ interface Props {
   timeWarpRef: React.MutableRefObject<number>;
   camDistanceRef: React.MutableRefObject<number>;
   fpsRef: React.MutableRefObject<number>;
+  stepsRef: React.MutableRefObject<number>;
 }
 
-export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef, fpsRef }: Props) {
+export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef, fpsRef, stepsRef }: Props) {
   const mountRef   = useRef<HTMLDivElement>(null);
   const runningRef = useRef(running);
   runningRef.current = running;
@@ -246,7 +247,8 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef, f
       const frameMs = now - lastFrameTime;
       lastFrameTime = now;
       avgFrameMs   += (frameMs - avgFrameMs) * 0.1;   // exponential moving avg
-      fpsRef.current = Math.round(1000 / avgFrameMs);
+      fpsRef.current   = Math.round(1000 / avgFrameMs);
+      stepsRef.current = maxSteps;
       const dt  = Math.min(frameMs / 16.667, 4);
 
       // Adaptive step count: target 30 fps; scale steps between 150–600
@@ -290,7 +292,7 @@ export default function SimCanvas({ sim, running, timeWarpRef, camDistanceRef, f
 
       // Camera position
       const r           = camDistanceRef.current;
-      const renderTheta = Math.max(0.05, Math.min(Math.PI - 0.05, Math.PI / 2 - camElevation));
+      const renderTheta = Math.max(0.05, Math.min(Math.PI - 0.05, latestTheta - camElevation));
       const renderPhi   = latestPhi + camPhiOffset;
       const [cx, cy, cz] = blToCartesian(r, renderTheta, renderPhi);
       camera.position.set(cx, cy, cz);
